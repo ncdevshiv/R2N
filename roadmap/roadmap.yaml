@@ -285,7 +285,7 @@ phases:
       - id: "M1-T11"
         title: "useId"
         priority: "P2"
-        done: false
+        done: true
       - id: "M1-T12"
         title: "Class components — state, props, lifecycle methods"
         priority: "P1"
