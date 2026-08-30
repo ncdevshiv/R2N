@@ -374,7 +374,7 @@ done = true
 id = "M1-T06"
 title = "useEffect — setup/cleanup/dependency-change lifecycle"
 priority = "P0"
-done = false
+done = true
 
 [[phases.tasks]]
 id = "M1-T07"

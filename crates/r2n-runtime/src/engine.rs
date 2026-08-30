@@ -92,6 +92,19 @@ impl FrameStore {
         self.pass
     }
 
+    /// Cleanups of frames NOT rendered in `pass`: they were unmounted this
+    /// pass — drain and run their armed effect cleanups (React cleanup on
+    /// unmount), disarming them so a later remount cannot run them again.
+    fn take_unmounted_cleanups(&mut self, pass: u64) -> Vec<EffectBody> {
+        let mut out = Vec::new();
+        for frame in self.frames.values_mut() {
+            if frame.last_pass() != Some(pass) {
+                out.extend(frame.take_cleanups());
+            }
+        }
+        out
+    }
+
     /// Queue every dirty frame's instance path on the scheduler (deduped),
     /// clearing the per-frame dirty flags. Called after each render pass.
     fn schedule_dirty(&mut self, scheduler: &mut Scheduler) {
@@ -204,6 +217,14 @@ impl Runtime {
             &mut host,
         )?;
         self.scopes = scopes;
+        // Unmounted frames: their effects' cleanups run now (React cleanup
+        // on unmount — resources release at unmount, not at a later remount).
+        let unmount_cleanups = self
+            .frames
+            .take_unmounted_cleanups(self.frames.current_pass());
+        if !unmount_cleanups.is_empty() {
+            run_effects(&unmount_cleanups, &mut host, &self.template.components)?;
+        }
         // Handlers are re-derived from the fresh tree each pass; start clean
         // so handlers on removed nodes disappear.
         let mut handlers = std::mem::take(&mut self.handlers);
@@ -286,9 +307,12 @@ fn render_root(
     let path = vec!["root".to_string()];
     let pass = frames.current_pass();
     let frame = frames.get(&path);
-    frame.begin_render(pass);
+    let unmount_cleanups = frame.begin_render(pass);
     let mut env = Env::new();
     let mut effects: Vec<EffectBody> = Vec::new();
+    // Unmount cleanups run immediately: any state destroyed on unmount must
+    // release its resources now (React cleanup-on-unmount ordering).
+    run_effects(&unmount_cleanups, host, &template.components)?;
     for (name, expr) in &comp.bindings {
         let v = eval(
             expr,
@@ -507,7 +531,10 @@ fn render_node(
             let cenv = {
                 let pass = frames.current_pass();
                 let cframe = frames.get(&inst);
-                cframe.begin_render(pass);
+                let unmount_cleanups = cframe.begin_render(pass);
+                if !unmount_cleanups.is_empty() {
+                    run_effects(&unmount_cleanups, host, &template.components)?;
+                }
                 let mut cenv = Env::new();
                 for (p, v) in comp
                     .params

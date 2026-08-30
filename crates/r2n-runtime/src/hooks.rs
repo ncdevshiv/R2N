@@ -31,15 +31,20 @@ enum HookSlot {
     State {
         value: Value,
     },
-    Ref {
-        value: Value,
-    },
     /// `useReducer`: the reducer's params/body and the current state.
     /// The dispatcher evaluates `reducer(state, action)` on each dispatch.
     Reducer {
         params: Vec<String>,
         body: r2n_ir::js::JsExpr,
         state: Value,
+    },
+    /// `useEffect`: deps of the last run (or None = run every render) and
+    /// the currently-armed cleanup (body + captured env). The old cleanup
+    /// runs immediately before the effect re-runs (deps changed) and on
+    /// unmount — React cleanup semantics.
+    Effect {
+        deps: Option<Vec<Value>>,
+        cleanup: Option<EffectBody>,
     },
 }
 
@@ -127,6 +132,26 @@ impl HookFrame {
         (state, Value::Dispatcher { slot: idx })
     }
 
+    /// The pass this frame last rendered in (None = never).
+    pub fn last_pass(&self) -> Option<u64> {
+        self.last_pass
+    }
+
+    /// Take every ARMED cleanup (used by the runtime for unmounted frames:
+    /// the frame was absent for this render pass — its effects' cleanups
+    /// run now, once, and are disarmed so remount cannot run them again).
+    pub fn take_cleanups(&mut self) -> Vec<EffectBody> {
+        let mut out = Vec::new();
+        for slot in &mut self.slots {
+            if let HookSlot::Effect { cleanup, .. } = slot {
+                if let Some(c) = cleanup.take() {
+                    out.push(c);
+                }
+            }
+        }
+        out
+    }
+
     /// Read the reducer and its current state for dispatch evaluation.
     pub fn reducer_state(&self, idx: usize) -> Option<(Vec<String>, r2n_ir::js::JsExpr, Value)> {
         match self.slots.get(idx) {
@@ -149,48 +174,45 @@ impl HookFrame {
         }
     }
 
-    /// `useEffect(effect_body, deps)`. Records the effect and whether it should
-    /// run after this commit (first time, no deps, or deps changed since the
-    /// previous run tracked in the slot). The runtime flushes it after commit.
-    pub fn use_effect(&mut self, deps: Option<Vec<Value>>) -> bool {
+    /// `useEffect(effect_body, deps, cleanup)`: records the effect and
+    /// whether it should run after this commit (first time, no deps, or
+    /// deps changed since the previous run tracked in the slot). Returns
+    /// `(should_run, old_cleanup)`: when the deps changed, the PREVIOUS
+    /// cleanup (if any) must run immediately before the new setup (React
+    /// order). `cleanup` is the effect arrow's VALUE when it returns a
+    /// cleanup closure (captured env included); when the deps did NOT
+    /// change, the previously-armed cleanup stays armed.
+    pub fn use_effect(
+        &mut self,
+        deps: Option<Vec<Value>>,
+        cleanup: Option<EffectBody>,
+    ) -> (bool, Option<EffectBody>) {
         let idx = self.next_index;
         self.next_index += 1;
-        let (prev_deps, should_run) = if idx >= self.slots.len() {
-            // First time: create a slot; always run.
-            self.slots.push(HookSlot::Ref { value: Value::Null });
-            (None, true)
-        } else if let HookSlot::Ref { value } = &self.slots[idx] {
-            let prev = if let Value::Array(a) = value {
-                Some(a.clone())
-            } else {
-                None
-            };
-            let should_run = match (&deps, &prev) {
-                (None, _) => true,
-                (Some(_), None) => true,
-                (Some(d), Some(p)) => d != p,
-            };
-            (prev, should_run)
-        } else {
-            (None, true)
+        if idx >= self.slots.len() {
+            // First time: create a slot; always run. Nothing to clean.
+            self.slots.push(HookSlot::Effect { deps, cleanup });
+            return (true, None);
+        }
+        // Existing slot: compare deps to decide whether the effect re-runs.
+        let should_run = match (&deps, &self.slots[idx]) {
+            (None, _) => true,
+            (Some(_), HookSlot::Effect { deps: None, .. }) => true,
+            (Some(d), HookSlot::Effect { deps: Some(p), .. }) => d != p,
+            (Some(_), _) => true,
         };
-        // Persist the current deps in the slot so the next render can compare.
-        if idx < self.slots.len() {
-            if let HookSlot::Ref { value } = &mut self.slots[idx] {
-                *value = match &deps {
-                    Some(d) => Value::Array(d.clone()),
-                    None => Value::Null,
-                };
+        let old_cleanup = if should_run {
+            match &self.slots[idx] {
+                HookSlot::Effect { cleanup, .. } => cleanup.clone(),
+                _ => None,
             }
-        }
-        let _ = prev_deps;
+        } else {
+            None
+        };
         if should_run {
-            self.effects.push(Effect {
-                deps,
-                prev_deps: None,
-            });
+            self.slots[idx] = HookSlot::Effect { deps, cleanup };
         }
-        should_run
+        (should_run, old_cleanup)
     }
 
     /// Reset the call cursor for a new render (keeps slots, drops pending).
@@ -198,15 +220,31 @@ impl HookFrame {
     /// at least one whole pass stale was UNMOUNTED in between — its hook
     /// state is destroyed (React unmount semantics) and re-initializes from
     /// the hooks' initial values on this render.
-    pub fn begin_render(&mut self, pass: u64) {
+    pub fn begin_render(&mut self, pass: u64) -> Vec<EffectBody> {
         if let Some(last) = self.last_pass {
             if last + 1 < pass {
+                // Unmounted for a full pass: run every armed cleanup (React
+                // cleanup-on-unmount) and destroy the state.
+                let mut cleanups = Vec::new();
+                for slot in &self.slots {
+                    if let HookSlot::Effect {
+                        cleanup: Some(c), ..
+                    } = slot
+                    {
+                        cleanups.push(c.clone());
+                    }
+                }
                 self.slots.clear();
+                self.last_pass = Some(pass);
+                self.next_index = 0;
+                self.effects.clear();
+                return cleanups;
             }
         }
         self.last_pass = Some(pass);
         self.next_index = 0;
         self.effects.clear();
+        Vec::new()
     }
 
     /// Drain effects that should run after this commit.

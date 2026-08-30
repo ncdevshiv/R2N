@@ -525,3 +525,45 @@ Slot-stored reducer IR + dispatcher slot handle; 6 tests (event dispatch,
 multi-action transitions, batching to one render, per-instance
 independence, toggle semantics, persistence across parent renders).
 Suite 103 green; clippy/fmt/audit clean; records updated (M1 5/18, 41/106).
+
+## 2026-08-30 — Entry 11: M1-T06 useEffect Lifecycle
+
+**PLAN**
+React's full effect lifecycle beyond the mount-only setUp that existed:
+cleanup before re-run (deps changed) and cleanup on unmount — with the
+EXACT ordering (cleanup-old before setup-new) verified by host logs.
+
+**WHAT**
+- Parser: `return expr;` as the terminal statement of block-bodied arrows
+  (the React cleanup spelling `() => { s(); return () => c(); }` — the
+  returned expr is the block VALUE). Mirrored in the recovery parser.
+- `HookSlot::Effect { deps, cleanup }`: is the armed cleanup (body +
+  captured env) stored per effect slot.
+- `use_effect(deps, cleanup)` returns `(should_run, old_cleanup)`; when deps
+  changed, the OLD cleanup is returned to run BEFORE the new setup; when
+  deps did NOT change, the previously-armed cleanup stays armed (React).
+- Cleanup extraction: `cleanup_of` reads the effect arrow's VALUE — block
+  last-stmt closure or the whole body for the `() => () => c()` shorthand.
+- UNMOUNT-CLEANUP at unmount, not at remount (first version missed this): a
+  frame absent from a render pass is unmounted — per-pass
+  `take_unmounted_cleanups` runs its armed cleanups immediately and DISARMS
+  them so a later remount cannot run them again (confirming the first
+  implementation ran them late, at remount, which the log test caught).
+- Removing the now-dead `HookSlot::Ref` (effects moved to Effect).
+
+**WHY**
+Without cleanup-on-unmount, resources (timers, listeners in real apps) leak
+until a remount — the classic React footgun the lifecycle exists to
+prevent. The twice-built ordering guard (cleanup BEFORE setup on deps
+change) is the precise React behavior the acceptance tests pin down via
+`rt.logs()` order.
+
+**OPTIONS**
+- Cleanup = a second hook (`useCleanup`): rejected — not React's API; the
+  return-value form is what user code compiles against.
+- Run cleanups lazily at remount: rejected — log test caught the late run;
+  unmount-time release is the observable behavior.
+
+**CHOSE**
+Return-value cleanup + per-pass unmount drain. 6 tests; suite 109 green;
+records updated (M1 6/18, 42/106).
