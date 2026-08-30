@@ -129,7 +129,7 @@ phases:
 
   - id: "M0.2"
     name: "Reactive Runtime Loop"
-    status: "in-progress"   # core loop green via events; FIFO scheduler queue + 14-criteria sweep remain
+    status: "done"   # 14/14 incl. FIFO scheduler + 14-criteria acceptance suite (tests/acceptance_m02.rs)
     window: { start_week: 2, end_week: 4 }
     color: "#22d3ee"
     blurb: "The core reactive loop: event → state mutation → dirty component → scheduler → render → reconcile → patch → renderer. State keyed by (ComponentId, StateSlot); deterministic FIFO scheduler; minimal-diff reconciler."

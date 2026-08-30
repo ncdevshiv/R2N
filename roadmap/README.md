@@ -20,7 +20,7 @@ Open `index.html` in a browser (double-click — it is fully self-contained, no 
 
 ## How progress works
 
-- The tracker ships with a **baseline**: 5/106 tasks pre-checked, exactly the design/spec work completed in the R2N architecture sessions (the three specs + the M0.1/M0.2 working designs). No implementation code exists yet, so everything else starts unchecked.
+- The tracker ships with a **baseline**: 5/106 tasks pre-checked, exactly the design/spec work completed in the R2N architecture sessions (the three specs + the M0.1/M0.2 working designs). Implementation has since run ahead of the shipped baseline — the source of truth for what is done is [CHECKLIST.md](CHECKLIST.md) + `roadmap.yaml`/`roadmap.toml` — so `Reset` restores the original design-session baseline, not current progress.
 - Checking a task updates all stats, phase bars, and the progress ring **live**, and persists in that browser via `localStorage` (key `r2n.roadmap.progress.v1`).
 - **Export** produces `r2n-progress.json`; **Import** restores it. **Reset** returns to the shipped baseline.
 - The `.md` / `.yaml` / `.toml` files are the portable record — when a milestone closes, flip its tasks to `done` there and commit, so git history carries the milestone log.
