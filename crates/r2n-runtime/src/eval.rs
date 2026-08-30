@@ -537,6 +537,12 @@ fn call_var(
                 .map(|(_, v)| v.clone());
             Ok(found.unwrap_or(*default))
         }
+        "useId" => {
+            if frame.path().is_none() {
+                return Err(RuntimeError::new("useId outside a component"));
+            }
+            Ok(frame.use_id())
+        }
         "useRef" => {
             let initial = if let Some(a) = args.first() {
                 eval(a, env, frame, host, components, effects)?

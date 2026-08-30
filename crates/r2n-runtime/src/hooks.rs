@@ -9,6 +9,13 @@
 //! current frame's slot. This is the ADR-002 interlink made operational.
 
 use crate::value::Value;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Globally-unique id source for `useId` (like React's :rN: ids).
+fn next_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Per-instance hook storage. `slots` are append-only during a render up to the
 /// previous render's length; `effects` collects `useEffect` calls made this
@@ -55,6 +62,11 @@ enum HookSlot {
     /// `useRef`: the current value held by the ref box (the slot index is
     /// the identity across renders).
     RefValue {
+        value: Value,
+    },
+    /// `useId`: a globally-unique id created once for this instance's
+    /// lifetime (a remounted frame starts fresh — a new id, like React).
+    Id {
         value: Value,
     },
     /// `useMemo`: the deps of the last computation and its cached value.
@@ -211,6 +223,29 @@ impl HookFrame {
                 state,
             }) => Some((params.clone(), body.clone(), state.clone())),
             _ => None,
+        }
+    }
+
+    /// `useId()`: the same `Value` for every render of this instance; a
+    /// fresh one after unmount/remount (slot cleared on reset). The id is
+    /// globally unique and strings like `:r1:` (React's typical shape).
+    pub fn use_id(&mut self) -> Value {
+        let idx = self.next_index;
+        self.next_index += 1;
+        if idx >= self.slots.len() {
+            static NEXT: u64 = 0; // replaced below with atomic
+            let _ = NEXT;
+            let v = Value::from_str_utf8(&format!(":r{}:", crate::hooks::next_id()));
+            self.slots.push(HookSlot::Id { value: v.clone() });
+            return v;
+        }
+        match self.slots.get(idx) {
+            Some(HookSlot::Id { value }) => value.clone(),
+            _ => {
+                let v = Value::from_str_utf8(&format!(":r{}:", crate::hooks::next_id()));
+                self.slots[idx] = HookSlot::Id { value: v.clone() };
+                v
+            }
         }
     }
 

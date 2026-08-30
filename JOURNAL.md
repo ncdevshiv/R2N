@@ -740,3 +740,30 @@ cheaper fix than the wrong design would have been.
 **CHOSE**
 Handle with default + shared Env stack. 6 tests; suite 129; records
 updated (M1 10/18, 46/106).
+
+## 2026-08-30 — Entry 16: M1-T11 useId
+
+**PLAN**
+`useId()` — React's `:rN:` ids: stable across an instance's renders, unique
+per instance, distinct per call site, fresh after unmount/remount.
+
+**WHAT**
+- `HookSlot::Id { value }`: a globally-unique `:rN:` string generated once
+  (atomic counter) at first call and stored in the slot; hook order keeps
+  call sites distinct (slot-indexed); the slot clears on frame reset
+  (unmount), so a remount gets a FRESH id — matching React.
+
+**WHY**
+The first cut used a per-frame counter (`next_callback_ident`), which
+incremented every render — the stability test caught `:root:1:` →
+`:root:2:`. React's id is a slot property, not a counter: stable for the
+instance lifetime, unique globally.
+
+**OPTIONS**
+- Derive from instance path: rejected — identical across a remount
+  (React gives a new instance a new id); and paths aren't global-unique.
+
+**CHOSE**
+Slot-stored atomic id; 3 tests (stability across re-renders, per-instance
+uniqueness, call-site distinctness). Suite 132 green; clippy/fmt/audit
+clean; records updated (M1 11/18, 47/106).

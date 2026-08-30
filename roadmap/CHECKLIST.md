@@ -1,7 +1,7 @@
 # R2N — Complete Execution Checklist
 
 > **R2N — React to Native** — Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime
-> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **46/106** tasks done (43%).
+> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **47/106** tasks done (44%).
 > Audit basis: every task was verified against the actual implementation and test suite (54 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
 
 **How to use:** check items off in the interactive tracker ([index.html](index.html)) — it saves live in your browser. This file, [roadmap.yaml](roadmap.yaml), and [roadmap.toml](roadmap.toml) are the portable record; update them when a milestone closes.
@@ -69,7 +69,7 @@ _Stop hand-building IR. Lexer → parser → AST → JS IR → React IR, and the
 
 ## M1 — React Compatibility — Level 1
 
-`IN PROGRESS` · weeks 7–12 · progress **10/18** (56%)
+`IN PROGRESS` · weeks 7–12 · progress **11/18** (61%)
 
 _Behavioral compatibility with React core: full hook set, keys, context, effects, class components, error boundaries, portals, Suspense — validated by a behavioral conformance suite, not API presence._
 
@@ -83,7 +83,7 @@ _Behavioral compatibility with React core: full hook set, keys, context, effects
 - [x] **P1** — useMemo / useCallback with dependency-tracked caching: `HookSlot::Memo` (deps + cached value; recompute only when deps changed — deps recorded AT recompute, otherwise every render sees them as changed); `HookSlot::Callback` caches a `Value::Handler` carrying a per-registration identity number (React function identity: stable while deps unchanged, new when they change — observable via effect-dep arrays); pre-existing scheduler bug fixed (a frame dirty before a pass was re-scheduled AFTER it → redundant extra pass → no-deps effects/memos fired twice per change; dirty flags now cleared at pass start); useCallback works as an onClick target (tests/use_memo.rs, 6 tests)
 - [x] **P0** — useRef — stable identity across renders: assignment expressions added to the parser/lowering (`target = value`, right-assoc, ident + member targets — twinned recovery parser); `Value::Ref { slot }` box whose `.current` reads/writes the hook-frame slot (same identity every render, writes persist without re-render, no dirty); `effectbodies now resolve the owning component's frame (EffectBody.frame_path) so hook handles inside effect bodies work — before, a throwaway frame broke ref reads in effects (tests/use_ref.rs, 3 tests)
 - [x] **P0** — useContext — Context / Provider / Consumer + value propagation: dotted JSX tags (`<Ctx.Provider>`, closes too — parser + recovery twin, previously unsupported); `createContext(default)` returns a `Value::Context { id, default }` handle (default lives on the handle, React contract); `ReactNode::ContextProvider` pushes (id, value) onto a SHARED per-pass context stack (`Env::ctx` Rc — child envs inherit it via `Env::child_of`); `useContext` reads the nearest value else the default; no-op `.map`-only child-call restriction broadened (any value call renders as text); return-validation gate now accepts Fragment/ContextProvider renderables (tests/use_context.rs, 6 tests)
-- [ ] **P2** — useId
+- [x] **P2** — useId: `HookSlot::Id` stores a globally-unique `:rN:` id generated once (atomic counter) — stable across renders of the instance, distinct per call site (slot-indexed), fresh after unmount/remount (slot cleared on frame reset, React behavior); frame-path requirement enforced (tests/use_id.rs, 3 tests)
 - [ ] **P1** — Class components — state, props, lifecycle methods
 - [ ] **P0** — Error boundaries — capture, fallback, recovery
 - [ ] **P1** — Portals — logical parent vs rendering parent
