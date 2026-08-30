@@ -20,6 +20,10 @@ pub struct HookFrame {
     effects: Vec<Effect>,
     /// Dirty flag set when a state setter is called; the scheduler re-renders.
     dirty: bool,
+    /// The last render pass this frame took part in (`None` = never rendered).
+    /// A frame absent for a full pass was unmounted — remounting resets its
+    /// state (React: unmount destroys component state).
+    last_pass: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,7 +134,17 @@ impl HookFrame {
     }
 
     /// Reset the call cursor for a new render (keeps slots, drops pending).
-    pub fn begin_render(&mut self) {
+    /// `pass` is the current render-pass number: a frame whose last pass is
+    /// at least one whole pass stale was UNMOUNTED in between — its hook
+    /// state is destroyed (React unmount semantics) and re-initializes from
+    /// the hooks' initial values on this render.
+    pub fn begin_render(&mut self, pass: u64) {
+        if let Some(last) = self.last_pass {
+            if last + 1 < pass {
+                self.slots.clear();
+            }
+        }
+        self.last_pass = Some(pass);
         self.next_index = 0;
         self.effects.clear();
     }

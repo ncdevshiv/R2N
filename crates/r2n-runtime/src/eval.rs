@@ -118,6 +118,9 @@ pub fn eval(
                 if prop == "map" && args.len() == 1 {
                     return call_map(base, &args[0], env, frame, host, components, effects);
                 }
+                if prop == "filter" && args.len() == 1 {
+                    return call_filter(base, &args[0], env, frame, host, components, effects);
+                }
                 if prop == "log" {
                     let parts: Result<Vec<String>, RuntimeError> = args
                         .iter()
@@ -428,6 +431,48 @@ fn call_map(
         let r = eval(body, env, frame, host, components, effects);
         env.pop_scope();
         out.push(r?);
+    }
+    Ok(Value::Array(out))
+}
+
+/// `arr.filter(predicate)` — keeps elements whose predicate result is truthy.
+/// Same per-item evaluation protocol as `call_map` (param 0 = element,
+/// param 1 = index).
+fn call_filter(
+    base: &JsExpr,
+    fn_expr: &JsExpr,
+    env: &mut Env,
+    frame: &mut HookFrame,
+    host: &mut dyn Host,
+    components: &[RuntimeComponent],
+    effects: &mut Vec<EffectBody>,
+) -> Result<Value, RuntimeError> {
+    let arr = eval(base, env, frame, host, components, effects)?;
+    let arr = match arr {
+        Value::Array(a) => a,
+        other => return Err(RuntimeError::new(format!("cannot filter over {other}"))),
+    };
+    let (params, body) = match fn_expr {
+        JsExpr::Closure { params, body, .. } => (params, body),
+        _ => return Err(RuntimeError::new("filter expects an arrow function")),
+    };
+    let mut out = Vec::new();
+    for (i, elem) in arr.into_iter().enumerate() {
+        let keep = {
+            env.push_scope();
+            if let Some(p) = params.first() {
+                env.define(p, elem.clone());
+            }
+            if let Some(p) = params.get(1) {
+                env.define(p, Value::Number(i as f64));
+            }
+            let r = eval(body, env, frame, host, components, effects);
+            env.pop_scope();
+            r?.is_truthy()
+        };
+        if keep {
+            out.push(elem);
+        }
     }
     Ok(Value::Array(out))
 }

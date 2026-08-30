@@ -257,7 +257,7 @@ phases:
       - id: "M1-T04"
         title: "Conditional rendering & lists (map → keyed children)"
         priority: "P0"
-        done: false
+        done: true
       - id: "M1-T05"
         title: "useReducer — reducer IR + dispatch actions"
         priority: "P0"

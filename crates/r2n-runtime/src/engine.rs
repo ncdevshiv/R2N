@@ -70,11 +70,26 @@ type SpliceMap = HashMap<Vec<String>, Splice>;
 #[derive(Debug, Default)]
 pub struct FrameStore {
     frames: HashMap<Vec<String>, HookFrame>,
+    /// Monotonic render-pass counter. Each `render_once` is one pass; a
+    /// component's frame that skips a full pass was UNMOUNTED and must
+    /// reset its hook state on remount (React unmount semantics).
+    pass: u64,
 }
 
 impl FrameStore {
     fn get(&mut self, path: &[String]) -> &mut HookFrame {
         self.frames.entry(path.to_vec()).or_default()
+    }
+
+    /// Begin a new render pass; returns its number for `begin_render`.
+    fn begin_pass(&mut self) -> u64 {
+        self.pass += 1;
+        self.pass
+    }
+
+    /// The current render-pass number (read before borrowing a frame).
+    fn current_pass(&self) -> u64 {
+        self.pass
     }
 
     /// Queue every dirty frame's instance path on the scheduler (deduped),
@@ -177,6 +192,7 @@ impl Runtime {
     fn render_once(&mut self, all: &mut Vec<Patch>) -> Result<(), RuntimeError> {
         let mut host = LogHost { log: &mut self.log };
         let mut scopes = std::mem::take(&mut self.scopes);
+        self.frames.begin_pass();
         // Splices are rebuilt every pass: they ride the component-call props
         // (`Value::Children`), so a fresh render re-derives them naturally.
         let mut splices = SpliceMap::new();
@@ -268,8 +284,9 @@ fn render_root(
     let root = template.root;
     let comp = template.components[root].clone();
     let path = vec!["root".to_string()];
+    let pass = frames.current_pass();
     let frame = frames.get(&path);
-    frame.begin_render();
+    frame.begin_render(pass);
     let mut env = Env::new();
     let mut effects: Vec<EffectBody> = Vec::new();
     for (name, expr) in &comp.bindings {
@@ -419,6 +436,19 @@ fn render_node(
                 let frame = frames.get(inst_path);
                 eval(expr, env, frame, host, &template.components, effects)?
             };
+            // React children semantics: `true`, `false`, `null`, and
+            // `undefined` render NOTHING (so `{flag && "text"}` can ride the
+            // Text path — a falsy short-circuit result disappears). Numbers
+            // (including 0) and strings render — the classic `0` footgun is
+            // React parity, deliberately preserved.
+            if matches!(v, Value::Null | Value::Bool(_)) {
+                return Ok(RenderedNode::Host {
+                    tag: FRAGMENT.to_string(),
+                    props: Vec::new(),
+                    children: Vec::new(),
+                    key: "t".to_string(),
+                });
+            }
             RenderedNode::Text {
                 text: v.display(),
                 key: "t".to_string(),
@@ -475,8 +505,9 @@ fn render_node(
             }
             // The instance's own hook frame + env (the frame protocol).
             let cenv = {
+                let pass = frames.current_pass();
                 let cframe = frames.get(&inst);
-                cframe.begin_render();
+                cframe.begin_render(pass);
                 let mut cenv = Env::new();
                 for (p, v) in comp
                     .params

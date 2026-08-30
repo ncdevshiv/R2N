@@ -377,13 +377,89 @@ fn lower_child(child: &Expr, index: &HashMap<String, usize>) -> Result<ReactNode
             // possible `items.map(x => <li/>)` directly as a child
             if let Some(list) = try_lower_list(child, index)? {
                 Ok(list)
+            } else if is_index_call(callee) {
+                // `arr[i]` (the parser emits `.get(i)`): renders the indexed
+                // value as text — not a list map.
+                Ok(ReactNode::Text(lower_expr(child, index)?))
             } else {
                 Err(LowerError::InvalidListMap(format!("{callee:?} as child")))
             }
         }
+        // `{cond && <el/>}` / `{cond || <el/>}`: short-circuit rendering.
+        Expr::Binary { .. } if is_short_circuit_render(child) => lower_short_circuit(child, index),
         // A `{expr}` child renders as text.
         other => Ok(ReactNode::Text(lower_expr(other, index)?)),
     }
+}
+
+/// Is this callee an index access `base[key]` (the parser emits it as
+/// `base.get(key)`)? Index access in child position renders the value,
+/// whereas other method calls are not renderable.
+fn is_index_call(callee: &Expr) -> bool {
+    matches!(callee, Expr::Member { prop, .. } if prop == "get")
+}
+
+/// Does this expression structurally render a node on one side of a
+/// short-circuit (`&&`/`||`)? Elements and ternaries do; plain values
+/// render as (nullish-suppressed) text through the Text path instead.
+fn is_short_circuit_render(expr: &Expr) -> bool {
+    match expr {
+        Expr::Binary {
+            op: BinOp::And | BinOp::Or,
+            left,
+            right,
+        } => is_renderable_expr(left) || is_renderable_expr(right),
+        _ => false,
+    }
+}
+
+fn is_renderable_expr(expr: &Expr) -> bool {
+    matches!(expr, Expr::Element(_) | Expr::Ternary { .. })
+}
+
+/// Lower `{cond && <el/>}` to `If { cond, then: el, else: nothing }` — and
+/// `{cond || <el/>}` to `If { cond, then: nothing, else: el }`. "Nothing"
+/// is an empty fragment: React renders falsy short-circuit results as
+/// nothing at all.
+fn lower_short_circuit(
+    expr: &Expr,
+    index: &HashMap<String, usize>,
+) -> Result<ReactNode, LowerError> {
+    let (op, left, right) = match expr {
+        Expr::Binary { op, left, right } if matches!(op, BinOp::And | BinOp::Or) => {
+            (op, left, right)
+        }
+        other => return Ok(ReactNode::Text(lower_expr(other, index)?)),
+    };
+    let nothing = || {
+        Box::new(ReactNode::Fragment {
+            key: None,
+            children: Vec::new(),
+        })
+    };
+    // The ELEMENT side is the renderable branch; the other side is the
+    // condition (`cond && el` ⇒ el when cond; `cond || el` ⇒ el when !cond).
+    // When both sides are renderable the left wins the branch, right the
+    // condition — an unusual shape, but well-defined.
+    let (cond_expr, node_side) = if is_renderable_expr(left) && !is_renderable_expr(right) {
+        (right, left)
+    } else {
+        (left, right)
+    };
+    let node = lower_renderable(node_side, index)?;
+    Ok(match op {
+        BinOp::And => ReactNode::If {
+            cond: lower_expr(cond_expr, index)?,
+            then: Box::new(node),
+            else_: nothing(),
+        },
+        BinOp::Or => ReactNode::If {
+            cond: lower_expr(cond_expr, index)?,
+            then: nothing(),
+            else_: Box::new(node),
+        },
+        _ => unreachable!("guarded by is_short_circuit_render"),
+    })
 }
 
 /// Detect and lower the `array.map((x, i) => <element key={x}/>)` pattern into
