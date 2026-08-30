@@ -152,3 +152,50 @@ Progress claims must never outrun the code; the roadmap's completion rule is
 **CHOSE**
 Real events through the ABI value model, architecture guard in CI, records
 matching reality.
+
+## 2026-08-30 — Entry 4: M0.2 Status Reconciliation & Cross-Surface CI Guard
+
+**PLAN**
+After #79 (FIFO scheduler) and #80 (14-criteria acceptance suite) merged and
+the README declared M0.2 DONE (#82), reconcile every remaining status surface
+and add a CI check so this drift class cannot recur silently.
+
+**WHAT**
+- CHECKLIST.md M0.2: `IN PROGRESS — exit review pending` → `DONE` (the 14
+  acceptance criteria are all green in `tests/acceptance_m02.rs`; the "pending
+  review" note predated #82 and was never cleared).
+- roadmap.yaml / roadmap.toml: M0.2 `status: "in-progress"` (with a comment
+  claiming the FIFO queue and acceptance sweep "remain" — false since #79/#80)
+  → `status: "done"`; audit-basis line now cites the 54-test suite (30 was
+  the v0.1.0 release-commit count, stale after #79/#81 added 24 tests).
+- ROADMAP.md header: "implementation not started" (2026-08-29) → true state
+  (M0.1–M0.2 done, M0.3 8/9, 35/106).
+- roadmap/README.md: "No implementation code exists yet" → baseline note
+  pointing at CHECKLIST/yaml/toml as the source of truth.
+- docs/CHANGELOG.md "30 tests" left as-is: it describes the v0.1.0 release
+  commit (94dfe01), where the count was exactly 30 — a historical record.
+- scripts/verify-audit-claims.sh check [4] rewritten: previously it only
+  compared the M0.1 line of README vs CHECKLIST, so M0.2's README-DONE vs
+  yaml-in-progress contradiction passed CI. Now it derives every milestone's
+  status from task flags in yaml AND toml, cross-checks the declared phase
+  status, CHECKLIST status word, README table (incl. grouped M1–M7 rows),
+  and ROADMAP.md table. Negative-tested both directions.
+- PR #86 (relax cargo-deny wildcards) closed as superseded: #84 versioned the
+  intra-workspace path deps — the root-cause fix — so the strict
+  `wildcards = "deny"` policy stays.
+
+**WHY**
+Records drifted in opposite directions from the same events: the README moved
+forward (#82), the yaml/toml stayed behind, and CI had no cross-surface check
+to catch it. The project's rule is that claims must be re-derivable, so the
+fix is a check, not just an edit.
+
+**OPTIONS**
+- Hand-edit the four files and move on: rejected — same drift would recur on
+  the next milestone.
+- Generate all record files from yaml/toml: rejected for now — more moving
+  parts than the project needs at 35/106; the extended check covers the gap.
+
+**CHOSE**
+Reconcile the records, then enforce agreement in CI: status is derived from
+task flags, and every surface must agree or the build fails.

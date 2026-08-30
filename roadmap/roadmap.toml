@@ -178,7 +178,7 @@ done = true
 [[phases]]
 id = "M0.2"
 name = "Reactive Runtime Loop"
-status = "in-progress"
+status = "done"
 start_week = 2
 end_week = 4
 color = "#22d3ee"
