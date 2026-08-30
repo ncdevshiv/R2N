@@ -52,7 +52,7 @@ A FIFO scheduler queue (state currently re-renders via a dirty-flag loop), the f
 
 ```bash
 cargo build --workspace
-cargo test --workspace          # 30 tests incl. architecture guards
+cargo test --workspace          # 54 tests incl. architecture + acceptance guards
 cargo clippy --workspace --all-targets -- -D warnings
 scripts/verify-audit-claims.sh  # re-derives every README/roadmap claim from source
 ```
