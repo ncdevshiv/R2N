@@ -39,6 +39,13 @@ pub enum Value {
     /// slot index (the frame-protocol callback channel). It is `Copy` and
     /// serializable, so it crosses the ABI boundary as a plain value.
     Setter(crate::hooks::Setter),
+    /// A `useReducer` dispatch handle: carries the hook-frame slot index of
+    /// the stored reducer. Calling it evaluates `reducer(state, action)` in
+    /// the frame and writes the result — the reducer body is IR data, never
+    /// a Rust function pointer.
+    Dispatcher {
+        slot: usize,
+    },
     /// The `children` prop: pre-lowered React-IR nodes passed through a
     /// component call. The nodes are pure data (they may reference the
     /// PARENT's scope; the runtime evaluates them against the parent's
@@ -80,7 +87,8 @@ impl Value {
             Value::Map(m) => !m.is_empty(),
             Value::Handler { .. } => true,
             Value::Setter(_) => true,
-            Value::Children(c) => !c.is_empty(),
+            Value::Dispatcher { .. } => true,
+            Value::Children(_) => true,
         }
     }
 
@@ -109,6 +117,7 @@ impl Value {
             }
             Value::Handler { .. } => "<handler>".to_string(),
             Value::Setter(s) => format!("<setter#{}>", s.frame_index),
+            Value::Dispatcher { slot } => format!("<dispatch#{slot}>"),
             Value::Children(_) => "<children>".to_string(),
         }
     }

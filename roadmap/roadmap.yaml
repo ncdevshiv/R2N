@@ -261,7 +261,7 @@ phases:
       - id: "M1-T05"
         title: "useReducer — reducer IR + dispatch actions"
         priority: "P0"
-        done: false
+        done: true
       - id: "M1-T06"
         title: "useEffect — setup/cleanup/dependency-change lifecycle"
         priority: "P0"

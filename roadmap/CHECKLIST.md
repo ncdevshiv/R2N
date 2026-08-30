@@ -1,7 +1,7 @@
 # R2N — Complete Execution Checklist
 
 > **R2N — React to Native** — Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime
-> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **40/106** tasks done (38%).
+> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **41/106** tasks done (39%).
 > Audit basis: every task was verified against the actual implementation and test suite (54 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
 
 **How to use:** check items off in the interactive tracker ([index.html](index.html)) — it saves live in your browser. This file, [roadmap.yaml](roadmap.yaml), and [roadmap.toml](roadmap.toml) are the portable record; update them when a milestone closes.
@@ -69,7 +69,7 @@ _Stop hand-building IR. Lexer → parser → AST → JS IR → React IR, and the
 
 ## M1 — React Compatibility — Level 1
 
-`IN PROGRESS` · weeks 7–12 · progress **4/18** (22%)
+`IN PROGRESS` · weeks 7–12 · progress **5/18** (28%)
 
 _Behavioral compatibility with React core: full hook set, keys, context, effects, class components, error boundaries, portals, Suspense — validated by a behavioral conformance suite, not API presence._
 
@@ -77,7 +77,7 @@ _Behavioral compatibility with React core: full hook set, keys, context, effects
 - [x] **P0** — Keys as first-class identity + keyed reconciliation (move vs recreate): author `key` on any static child (host or component, incl. through conditional branches) becomes `k:{value}` identity evaluated in the parent scope; a keyed child that changes position emits `Move`, never Remove+Create, and its component instance (hook state) follows the key — proven by a genuine slot-swap test; `key` never reaches renderers; `diff_children` Move indices fixed from survivor-relative to absolute (tests/keys.rs, 8 tests)
 - [x] **P0** — Fragments (`<>...</>` shorthand parses as an empty-tag element; lowers to `ReactNode::Fragment { key, children }`; runtime renders the transparent FRAGMENT host so children splice into the parent — siblings flow around, nested fragments flatten transitively; fragment-child keys are scoped `<parent-seg>:<i>` so spliced children never collide with the parent's positional keys; fragments work as `.map` items (children interleave in item order, keyed siblings survive branch flips); diff computes FLAT renderer positions for fragment siblings — a fragment occupies `children.len()` slots, not one; tests/fragments.rs, 9 tests)
 - [x] **P0** — Conditional rendering & lists (map → keyed children): `{cond && <el/>}` / `{cond || <el/>}` lower structurally to If with an empty-fragment "nothing" branch; `{false}`/`{null}` render nothing while `{0}`/`{NaN}` render (React children semantics incl. the `0` footgun); `.get` index access renders as a JSX child; `arr.filter(pred).map(el)` chains evaluate with keyed items; ternary chains act as else-if; conditional unmount destroys hook state (frame-pass staleness detection — a frame absent a full render pass resets on remount) (tests/control_flow.rs, 8 tests)
-- [ ] **P0** — useReducer — reducer IR + dispatch actions
+- [x] **P0** — useReducer — reducer IR + dispatch actions: `HookSlot::Reducer` stores the reducer arrow as IR data (params + body, never a function pointer); `Value::Dispatcher { slot }` carries the frame slot; a dispatch call evaluates `reducer(state, action)` in a fresh env of its params and writes the frame (dirty → flush); multiple dispatches in one handler batch into a single render; per-instance independence; batch dedup test-verified (tests/use_reducer.rs, 6 tests)
 - [ ] **P0** — useEffect — setup/cleanup/dependency-change lifecycle
 - [ ] **P1** — useLayoutEffect — synchronous pre-commit ordering
 - [ ] **P1** — useMemo / useCallback with dependency-tracked caching

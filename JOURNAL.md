@@ -481,3 +481,47 @@ Structural short-circuit lowering + pass-staleness reset. 8 tests
 value short-circuit, ternary chains, index child, filter().map() chain,
 conditional unmount/remount lifecycle. 97 green; records updated
 (M1 4/18, 40/106).
+
+## 2026-08-30 — Entry 10: M1-T05 useReducer
+
+**PLAN**
+`useReducer(reducer, initial)` → `[state, dispatch]` with React semantics:
+dispatch(action) runs `reducer(state, action)`, writes the frame, marks it
+dirty, and the flush loop re-renders. The reducer must be ABI-safe IR data,
+never a Rust function pointer.
+
+**WHAT**
+- `HookSlot::Reducer { params, body, state }` — the reducer arrow (params +
+  body, a `JsExpr`) stored in the hook frame; `use_reducer` skips
+  re-registration on subsequent renders and re-initializes from `initial`
+  only on first mount.
+- `Value::Dispatcher { slot }` — the dispatch handle (like `Setter`, it
+  carries only the frame slot index and is serializable).
+- `call_value` grew a `Dispatcher` arm: it reads the stored reducer, builds
+  a fresh env bound to `(state, action)`, evaluates the body, and writes
+  the result back — dirty → flush → render. `call_value`'s signature now
+  carries the evaluator context (env/host/components/effects) that reducers
+  need; `SetValue`/Handler arms unchanged.
+- `call_var("useReducer")` extracts the reducer from the arg as IR
+  (`JsExpr::Closure` params + body) — never evaluated as a value.
+
+**WHY**
+The dispatch handle must stay a plain ABI value (like `Setter` and
+`Handler`) — the frame slot index is all that crosses boundaries; the
+reducer itself is IR the runtime owns. The setter machinery couldn't be
+reused directly because a reducer needs BOTH the old state and the action
+to compute the next value.
+
+**OPTIONS**
+- Reducer as a functional setter (`apply_setter(s, closure)`) — the setter
+  API takes a Value, and closures aren't real values yet (M2); storing the
+  body in the slot is the same mechanism effects use, minus the env capture.
+- Reducer as a `Value::Handler`-like (inst_path + body): overkill — the
+  reducer is pure (params bound each call); a fresh env is correct and
+  cheaper than a scopes-map round trip.
+
+**CHOSE**
+Slot-stored reducer IR + dispatcher slot handle; 6 tests (event dispatch,
+multi-action transitions, batching to one render, per-instance
+independence, toggle semantics, persistence across parent renders).
+Suite 103 green; clippy/fmt/audit clean; records updated (M1 5/18, 41/106).
