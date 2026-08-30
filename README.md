@@ -23,11 +23,11 @@ source (.r2n)  →  Lexer  →  Parser (AST)  →  Lowering  →  JS IR ─┐
 | Milestone | State | Progress |
 |---|---|---|
 | M0.1 Foundation — workspace & vertical slice | **DONE** | 13/13 |
-| M0.2 Reactive runtime loop | in progress | 12/14 |
-| M0.3 Compiler frontend (JS/JSX → IR) | in progress | 7/9 |
+| M0.2 Reactive runtime loop | **DONE** | 14/14 |
+| M0.3 Compiler frontend (JS/JSX → IR) | in progress | 8/9 |
 | M1–M7 | planned | — |
 
-**Overall: 32/106 roadmap tasks.** Every claim above is backed by the test suite (`cargo test`) and the architecture-guard tests. See [roadmap/CHECKLIST.md](roadmap/CHECKLIST.md) for the task-level record, [JOURNAL.md](JOURNAL.md) for decision history, and [docs/AUDIT.md](docs/AUDIT.md) for the latest audit report.
+**Overall: 35/106 roadmap tasks.** Every claim above is backed by the test suite (`cargo test`) and the architecture-guard tests. See [roadmap/CHECKLIST.md](roadmap/CHECKLIST.md) for the task-level record, [JOURNAL.md](JOURNAL.md) for decision history, and [docs/AUDIT.md](docs/AUDIT.md) for the latest audit report.
 
 ### What works today (all test-verified)
 
