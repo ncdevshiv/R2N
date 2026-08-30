@@ -43,6 +43,14 @@ pub enum ReactNode {
         key_expr: JsExpr,
         item: Box<ReactNode>,
     },
+    /// The splice point for a parent's `children` prop inside a child
+    /// component's body (`React children composition`). Lowered from the
+    /// `children` identifier wherever it appears in render position. At
+    /// render time the engine expands the `Value::Children` nodes carried by
+    /// the current component's `children` prop, evaluating each in the
+    /// PARENT's saved scope (composition is by reference, not by copy: the
+    /// nodes still close over their original component).
+    Children,
     /// A dynamic value rendered as text (e.g. `{count}`).
     Text(JsExpr),
 }

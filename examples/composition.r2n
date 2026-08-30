@@ -1,0 +1,30 @@
+// Composition: props & children propagation through component calls (M1-T01).
+// `r2n render examples/composition.r2n` — props flow through declared params,
+// JSX children become the `children` prop, and children keep closing over the
+// PARENT's scope (composition by reference, like React).
+component Card(title) {
+    return (
+        <section className="card">
+            <h2>{title}</h2>
+            <div className="body">{children}</div>
+        </section>
+    );
+}
+component Badge(label) {
+    return <span className="badge">{label}</span>;
+}
+component App() {
+    let name = "world";
+    return (
+        <main>
+            <Card title="one">
+                <Badge label="first"/>
+            </Card>
+            <Card title="two">
+                <p>Hello, {name}!</p>
+                <Badge label="second"/>
+            </Card>
+        </main>
+    );
+}
+export default App;

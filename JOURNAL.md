@@ -259,3 +259,61 @@ way to claim "recovery" is to prove it changes nothing on valid input.
 Full recovery with proven parity, friendly names, carets; records updated in
 the same PR (CHECKLIST/yaml/toml M0.3 → DONE 9/9, 36/106 overall), issue #7
 closed by the merge.
+
+## 2026-08-30 — Entry 6: M1-T01 Props & Children Propagation
+
+**PLAN**
+Open M1 (React Compatibility) with its P0 foundation: components receive
+props through declared params (already worked) and — the actual gap — JSX
+children of a component element must compose into the child's tree exactly
+like React: `<Card><b>hi</b></Card>` makes `children` readable inside Card,
+and the children still evaluate in the parent's scope.
+
+**WHAT**
+- `JsExpr::Children(Vec<ReactNode>)` / `Value::Children`: component-element
+  JSX children lower NOW, in the parent's context, into pre-built React-IR
+  nodes that ride the `children` prop as pure serializable data (no Rust
+  function pointers — the ABI rule holds).
+- `ReactNode::Children`: the splice point, lowered from the `children`
+  identifier wherever it appears in render position (host child, sole
+  expression, ternary branch — all covered by `lower_child`/`lower_renderable`).
+- Engine: a `SpliceMap` (instance path → nodes + parent env + parent inst
+  path) threaded through `render_node`. A component call records its splice
+  from the fresh `children` prop each pass (stale splices are removed when
+  the prop disappears); the splice point renders the stored nodes against the
+  PARENT's env and hook frame as a transparent `cfrag` fragment — riding the
+  existing fragment mechanism (render-time splice + keyed diff), so children
+  reconcile with stable `^i` keys and sibling positions line up on every
+  renderer.
+- 8 acceptance tests (tests/props_children.rs): props through params,
+  basic composition, parent-scope closure (child's `{n+ 1}` reads the
+  parent's n — the shadowing test proves composition-by-reference), splice
+  among siblings, liveness across click → SetText re-renders with zero
+  removals, no-children renders nothing, nested component+children chains,
+  two independent slot instances in order. Suite: 73 green, clippy clean.
+- examples/composition.r2n (Card/Badge/App) renders through the CLI; the
+  JSON artifact carries the new variants and stays valid.
+
+**WHY**
+Children composition is the load-bearing React pattern — layout components,
+slots, lists of anything — and it is the M1 gate the other hooks build on.
+The design decision that matters: children lower EARLY (parent context) and
+evaluate LATE (parent scope at splice time), which preserves both capture
+semantics (`{n}` in a child slot is the parent's n, exactly like React) and
+the artifact rule (nodes are data; the runtime never sees source).
+
+**OPTIONS**
+- Render children eagerly in the parent and pass a rendered subtree value:
+  rejected — breaks reactivity (the subtree's expressions would evaluate in
+  the parent's render pass, not the child's) and bloats the value set.
+- `children` as a reserved env name only (no IR node): rejected — the splice
+  point must be visible in the artifact for cross-runtime parity; a name
+  convention would be invisible in serialized form.
+- Suspected an instance-path collision bug for same-name sibling components
+  (my first nested test failed); a minimal repro proved the engine right —
+  the test had declared `component Middle()` without a param, so
+  `label="override"` was correctly dropped. Test fixed; no engine change.
+
+**CHOSE**
+Children as first-class ABI data: lower early, splice late, close over the
+parent. Records updated in the same PR (M1 1/18 in progress, 37/106).

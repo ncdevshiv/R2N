@@ -56,6 +56,11 @@ pub enum JsExpr {
     /// Reference to a builtin by name (e.g. `"useState"`, `"items.map"` is a
     /// member call, not a builtin). Builtins are resolved by the runtime.
     Builtin(String),
+    /// Pre-lowered React-IR nodes for a component call's `children` prop.
+    /// Produced by lowering JSX children of a component element; evaluates to
+    /// a `Value::Children` holding the nodes verbatim (they still reference
+    /// the PARENT's scope — the child splices them, it does not own them).
+    Children(Vec<crate::react::ReactNode>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

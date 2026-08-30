@@ -39,6 +39,12 @@ pub enum Value {
     /// slot index (the frame-protocol callback channel). It is `Copy` and
     /// serializable, so it crosses the ABI boundary as a plain value.
     Setter(crate::hooks::Setter),
+    /// The `children` prop: pre-lowered React-IR nodes passed through a
+    /// component call. The nodes are pure data (they may reference the
+    /// PARENT's scope; the runtime evaluates them against the parent's
+    /// saved scope at splice time — see engine's `ReactNode::Children`).
+    /// Serializable like every other ABI value; no Rust function pointers.
+    Children(Vec<r2n_ir::react::ReactNode>),
 }
 
 impl Value {
@@ -74,6 +80,7 @@ impl Value {
             Value::Map(m) => !m.is_empty(),
             Value::Handler { .. } => true,
             Value::Setter(_) => true,
+            Value::Children(c) => !c.is_empty(),
         }
     }
 
@@ -102,6 +109,7 @@ impl Value {
             }
             Value::Handler { .. } => "<handler>".to_string(),
             Value::Setter(s) => format!("<setter#{}>", s.frame_index),
+            Value::Children(_) => "<children>".to_string(),
         }
     }
 }
