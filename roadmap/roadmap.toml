@@ -380,7 +380,7 @@ done = true
 id = "M1-T07"
 title = "useLayoutEffect — synchronous pre-commit ordering"
 priority = "P1"
-done = false
+done = true
 
 [[phases.tasks]]
 id = "M1-T08"

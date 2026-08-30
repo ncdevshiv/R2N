@@ -61,6 +61,10 @@ pub struct Effect {
 pub struct EffectBody {
     pub body: r2n_ir::js::JsExpr,
     pub env: crate::eval::Env,
+    /// `useLayoutEffect` (true) drains synchronously during the render walk
+    /// — before the diff produces the patch stream (pre-commit). Regular
+    /// `useEffect` (false) drains after the diff (post-commit).
+    pub layout: bool,
 }
 
 impl HookFrame {

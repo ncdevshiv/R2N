@@ -567,3 +567,45 @@ change) is the precise React behavior the acceptance tests pin down via
 **CHOSE**
 Return-value cleanup + per-pass unmount drain. 6 tests; suite 109 green;
 records updated (M1 6/18, 42/106).
+
+## 2026-08-30 — Entry 12: M1-T07 useLayoutEffect
+
+**PLAN**
+`useLayoutEffect` — the synchronous pre-commit variant of useEffect. The
+observable React distinction in R2N's stages: layout effects drain DURING
+the render walk (before the diff produces the patch stream); passive
+effects drain after the diff.
+
+**WHAT**
+- `EffectBody.layout` flag separates the two phases.
+- Drain points restructured: render_root returns the DEFERRED queue (it no
+  longer drains everything inline); layout effects run inline via
+  `run_layout_effects` (Component-arm and render_root sites); the deferred
+  queue drains in render_once AFTER the diff; handler-captured effects
+  drain after the flush (dispatch) instead of before.
+- `call_var` routes `useLayoutEffect` and `useEffect` through the same
+  registration (slot machinery, deps, cleanup) with the phase carried on
+  the body.
+- BUG the tests caught: `cleanup_of` hardcoded `layout: false`, so a
+  layout effect's OLD cleanup drained with the passive queue — the cleanup
+  ran AFTER the new layout setup (wrong React order). Cleanup now inherits
+  its effect's phase (the cleanup belongs to the same hook slot).
+- HookSlot cleanup path verified again: deps-change cleanup-before-setup,
+  unmount cleanup, no-deps every-render — all phase-preserving.
+
+**WHY**
+The two effects differ ONLY in timing; a mount-only implementation would
+be a fake. Splitting the drain phase is the real semantic — and it exposed
+the phase-leak bug that the useEffect tests could not catch (they never
+mixed phases).
+
+**OPTIONS**
+- Separate slot kinds per phase: rejected — the lifecycle machinery is
+  identical; the phase is a property of the QUEUE, not the slot.
+- Keep passive effects inline too (status quo): rejected — that IS
+  layout semantics (it runs before the diff), so useEffect would be fake.
+
+**CHOSE**
+Single registration, phase-flagged bodies, two drain points (inline =
+layout, post-diff = passive). 5 tests; suite 114 green; clippy/fmt/audit
+clean; records updated (M1 7/18, 43/106).
