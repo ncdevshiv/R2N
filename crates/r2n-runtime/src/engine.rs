@@ -318,12 +318,13 @@ fn render_node(
                 };
                 rprops.push((name.clone(), v));
             }
-            let mut rchildren = Vec::with_capacity(children.len());
+            let mut rchildren: Vec<RenderedNode> = Vec::new();
             for (i, c) in children.iter().enumerate() {
                 // The node path (reconciliation identity) extends per child;
-                // the instance path stays the owning component's.
-                let child_node = child_path(node_path, i, "h");
-                let mut rn = render_node(
+                // the instance path stays the owning component's. Static
+                // children are position-keyed ('#i' — see child_path).
+                let child_node = child_path(node_path, i, &format!("#{i}"));
+                let rn = render_node(
                     c,
                     inst_path,
                     &child_node,
@@ -334,9 +335,27 @@ fn render_node(
                     host,
                     effects,
                 )?;
-                // Keys MUST be unique among siblings for keyed reconciliation
-                // (ADR-010); encode the position so two hosts never collide.
-                set_key(&mut rn, &format!("h{i}"));
+                if let RenderedNode::Host { tag, .. } = &rn {
+                    if tag == FRAGMENT {
+                        // Fragments are TRANSPARENT: splice their children
+                        // into this parent's child list at this position.
+                        // (Splicing at render time keeps diff_children indices
+                        // correct — a list fragment followed by a sibling gets
+                        // flat sibling positions, so Move/Create indices line
+                        // up on every renderer.)
+                        // List items KEEP their keyed identity (stable across
+                        // renders — the whole point of keys: a moved item is
+                        // the SAME node, not a new one).
+                        if let RenderedNode::Host { children: fc, .. } = rn {
+                            rchildren.extend(fc);
+                        }
+                        continue;
+                    }
+                }
+                // Static (non-list) siblings have no author-provided key,
+                // so their identity IS their position: '#i'.
+                let mut rn = rn;
+                set_key(&mut rn, &format!("#{i}"));
                 rchildren.push(rn);
             }
             RenderedNode::Host {
@@ -765,8 +784,20 @@ impl RenderedNode {
 }
 
 fn child_path(parent: &[String], index: usize, key: &str) -> Vec<String> {
+    // Node identity (ADR-010), with React's exact semantics:
+    // * An author-provided KEY (list items) is identity: the node keeps its
+    //   id across renders even when it moves — position is not encoded.
+    // * A static sibling (no key) is identified by POSITION: `#i`. (Two
+    //   <Counter/> siblings are different because they sit at different
+    //   positions; swapping them swaps identity.)
+    let seg = if let Some(pos) = key.strip_prefix('#') {
+        format!("#{pos}")
+    } else {
+        key.to_string()
+    };
+    let _ = index;
     let mut p = parent.to_vec();
-    p.push(format!("{index}:{key}"));
+    p.push(seg);
     p
 }
 
