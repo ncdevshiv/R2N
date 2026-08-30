@@ -51,6 +51,15 @@ pub enum ReactNode {
     /// PARENT's saved scope (composition is by reference, not by copy: the
     /// nodes still close over their original component).
     Children,
+    /// A fragment (`<>...</>`): a group of children with no host element of
+    /// its own. Transparent at reconciliation — its children splice into the
+    /// parent's child list, so siblings and keyed identity flow through.
+    /// `key` is the only prop React fragments accept (keyed fragments inside
+    /// `.map` lists keep item identity across reorders).
+    Fragment {
+        key: Option<JsExpr>,
+        children: Vec<ReactNode>,
+    },
     /// A dynamic value rendered as text (e.g. `{count}`).
     Text(JsExpr),
 }

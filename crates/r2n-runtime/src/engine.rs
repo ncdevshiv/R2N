@@ -611,6 +611,49 @@ fn render_node(
                 key: "frag".to_string(),
             }
         }
+        ReactNode::Fragment { children, .. } => {
+            // A `<>...</>` group: no host element of its own. Rendered as the
+            // transparent FRAGMENT host — the parent's children loop splices
+            // its children into place, so siblings flow around it and the
+            // children keep their own (possibly keyed) identity. The `key` on
+            // the fragment matters only when it is a LIST item (the List arm
+            // overrides the key below); any other position ignores it.
+            //
+            // Child keys are scoped by the fragment's own path segment
+            // (`<parent-seg>:<i>`): after splicing, the fragment's children
+            // are SIBLINGS of the parent's other children — bare `#i` keys
+            // would collide with the parent's positional keys and corrupt
+            // reconciliation (stale nodes survive branch flips).
+            let frag_seg = node_path
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "frag".to_string());
+            let mut out = Vec::with_capacity(children.len());
+            for (i, c) in children.iter().enumerate() {
+                let key = format!("{frag_seg}:{i}");
+                let child_node = child_path(node_path, i, &key);
+                let mut rn = render_node(
+                    c,
+                    inst_path,
+                    &child_node,
+                    env,
+                    frames,
+                    scopes,
+                    splices,
+                    template,
+                    host,
+                    effects,
+                )?;
+                set_key(&mut rn, &key);
+                out.push(rn);
+            }
+            RenderedNode::Host {
+                tag: FRAGMENT.to_string(),
+                props: Vec::new(),
+                children: out,
+                key: "frag".to_string(),
+            }
+        }
         ReactNode::Children => {
             // The parent's children splice point. Render each stored node in
             // the PARENT's env (against the parent's hook frame) — composition
@@ -746,12 +789,13 @@ fn diff_node(
                         });
                     }
                 }
+                let flats = flat_positions(children);
                 for (i, c) in children.iter().enumerate() {
                     let cp = child_path(path, i, c.key());
                     let (child_parent, child_index) = if is_frag {
-                        (parent, index + i)
+                        (parent, index + flats[i])
                     } else {
-                        (Some(id), i)
+                        (Some(id), flats[i])
                     };
                     diff_node(
                         id_map,
@@ -838,6 +882,7 @@ fn diff_children(
         .collect();
     let old_order: Vec<String> = old_children.iter().map(|c| c.key().to_string()).collect();
 
+    let flats = flat_positions(new_children);
     for (i, c) in new_children.iter().enumerate() {
         let key = c.key().to_string();
         let cp = child_path(path, i, &key);
@@ -849,7 +894,7 @@ fn diff_children(
             c,
             &cp,
             parent_id,
-            i,
+            flats[i],
             patches,
             next_id_map,
             handlers,
@@ -884,13 +929,19 @@ fn diff_children(
         .enumerate()
         .map(|(i, c)| (c.key(), i))
         .collect();
+    let new_flats = flat_positions(new_children);
     for (rel_new_i, key) in surviving_new.iter().enumerate() {
         let rel_old_i = surviving_old
             .iter()
             .position(|k| *k == key)
             .unwrap_or(rel_new_i);
         if rel_old_i != rel_new_i {
-            let abs_new_i = new_pos.get(key.as_str()).copied().unwrap_or(rel_new_i);
+            let list_pos = new_pos.get(key.as_str()).copied().unwrap_or(rel_new_i);
+            // The Move targets the child's flat renderer position (fragment
+            // siblings occupy multiple slots). Fragment children have no
+            // renderer node of their own — the id lookup misses and the
+            // move is skipped for them (their children move individually).
+            let abs_new_i = new_flats.get(list_pos).copied().unwrap_or(list_pos);
             if let Some(id) = next_id_map.get(&child_path(path, abs_new_i, key)) {
                 patches.push(Patch::Move {
                     id: *id,
@@ -946,6 +997,27 @@ fn static_key_expr(node: &ReactNode) -> Option<&r2n_ir::js::JsExpr> {
         }
         _ => None,
     }
+}
+
+/// Flat renderer positions for a child list. Fragments are TRANSPARENT:
+/// they never create a renderer node — each contributes `children.len()`
+/// flat slots, everything else contributes exactly one. When fragment
+/// siblings exist (e.g. `.map` items that are `<>` groups), a later
+/// sibling's flat index is NOT its list position; Create/Move indices must
+/// use these flat positions or the rendered child order breaks.
+fn flat_positions(children: &[RenderedNode]) -> Vec<usize> {
+    let mut out = Vec::with_capacity(children.len());
+    let mut flat = 0usize;
+    for c in children {
+        out.push(flat);
+        flat += match c {
+            RenderedNode::Host {
+                tag, children: fc, ..
+            } if tag == FRAGMENT => fc.len(),
+            _ => 1,
+        };
+    }
+    out
 }
 
 fn child_path(parent: &[String], index: usize, key: &str) -> Vec<String> {
