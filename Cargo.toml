@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/r2n-ast",
+    "crates/r2n-parser",
+    "crates/r2n-ir",
+    "crates/r2n-runtime",
+    "crates/r2n-renderer-memory",
+    "crates/r2n-compiler",
+    "crates/r2n-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[profile.release]
+opt-level = 2

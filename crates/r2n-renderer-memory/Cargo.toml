@@ -1,0 +1,12 @@
+[package]
+name = "r2n-renderer-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "In-memory renderer for the R2N runtime (consumes the Patch stream)"
+
+[dependencies]
+r2n-runtime = { path = "../r2n-runtime" }
+
+[dev-dependencies]
+r2n-compiler = { path = "../r2n-compiler" }

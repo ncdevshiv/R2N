@@ -1,0 +1,573 @@
+# R2N — React to Native — Roadmap
+# Machine-readable source of truth. Keep in sync with index.html (interactive tracker).
+# NOTE: 'done' flags below are the shipped baseline, not live progress.
+project: "R2N — React to Native"
+tagline: "Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime"
+updated: 2026-08-30
+project_start: 2026-08-29
+horizon_weeks: 56
+north_star: >-
+  A native compatibility platform capable of compiling existing React/JSX applications into a JavaScript-runtime-free executable representation, while progressively compiling their dynamic behavior into specialized native code.
+
+pillars:
+  - name: "Existing React compatibility"
+    text: "Accept real-world React/JSX applications unchanged. Behavioral compatibility, not API-presence compatibility."
+  - name: "Zero JavaScript at runtime"
+    text: "Production executes native/WASM artifacts. No JS engine, no Node.js, no JS execution in the shipped runtime."
+  - name: "Optimization beyond React"
+    text: "Compile known behavior into specialized native code — fast path when static analysis proves it, compatibility path otherwise."
+
+compatibility_levels:
+  - level: 0
+    name: "JSX"
+    detail: "Elements, attributes, children, expressions"
+    milestone: "M0.3"
+  - level: 1
+    name: "React core"
+    detail: "Components, hooks, reconciliation, context, suspense, portals"
+    milestone: "M1"
+  - level: 2
+    name: "JavaScript language"
+    detail: "Full ECMAScript semantics: closures, classes, async, modules"
+    milestone: "M2"
+  - level: 3
+    name: "React ecosystem"
+    detail: "Router, state, data, UI, animation libraries"
+    milestone: "M6"
+  - level: 4
+    name: "Browser APIs"
+    detail: "DOM events, timers, fetch, storage compat layer"
+    milestone: "M6"
+  - level: 5
+    name: "Frameworks"
+    detail: "Next.js/Vite-style app structures"
+    milestone: "M6"
+  - level: 6
+    name: "Arbitrary production applications"
+    detail: "Large existing repos run unchanged"
+    milestone: "M7"
+
+performance_targets:
+  - tier: "Tier 1 — Compatibility runtime"
+    startup: "1.5×"
+    memory: "−10–20%"
+    ui_updates: "≈ parity"
+    cpu_workloads: "—"
+  - tier: "Tier 2 — Native IR optimization"
+    startup: "3–5×"
+    memory: "−30–50%"
+    ui_updates: "2–5×"
+    cpu_workloads: "2–10×"
+  - tier: "Tier 3 — Aggressive specialization"
+    startup: "5–10×"
+    memory: "−50–70%"
+    ui_updates: "3–10×"
+    cpu_workloads: "5–20×+"
+
+benchmarks: ["Counter", "TodoMVC", "Large table", "10,000-row list", "Complex form", "Dashboard", "Animation-heavy UI", "Large component tree", "CPU-heavy app logic", "Real-world React apps"]
+
+phases:
+  - id: "M0.1"
+    name: "Foundation — Workspace & Vertical Slice"
+    status: "done"   # done = implementation exists and is test-verified
+    window: { start_week: 1, end_week: 2 }
+    color: "#7c5cff"
+    blurb: "Rust workspace, IR data models, runtime skeleton, memory renderer, and the first compiler pipeline: source → parser → AST → React IR → Runtime IR → runtime → memory renderer."
+    tasks:
+      - id: "M0.1-T01"
+        title: "Project charter locked: three pillars (React compatibility, zero-JS runtime, specialization)"
+        priority: "P0"
+        done: true
+      - id: "M0.1-T02"
+        title: "Spec JS_IR.md v0.1 — value model, instruction set, closures, modules, async, exceptions, optimization metadata"
+        priority: "P0"
+        done: true
+      - id: "M0.1-T03"
+        title: "Spec REACT_IR.md v0.1 — components, elements, hooks, effects, reconciliation, keys, context, suspense, portals"
+        priority: "P0"
+        done: true
+      - id: "M0.1-T04"
+        title: "Spec RUNTIME_ABI.md v0.1 — handles, node/state/component ops, scheduler, capabilities, errors, versioning"
+        priority: "P0"
+        done: true
+      - id: "M0.1-T05"
+        title: "Create Rust workspace: root Cargo.toml + 8 crates (ast, parser, js-ir, react-ir, runtime-ir, runtime, renderer-memory, compiler)"
+        priority: "P0"
+        done: true
+      - id: "M0.1-T06"
+        title: "crates/ast — minimal Expr / BinaryOp / JsxElement / JsxChild model"
+        priority: "P0"
+        done: true
+      - id: "M0.1-T07"
+        title: "crates/runtime-ir — Value, NodeId, StateSlot, HandlerId, Instruction, RuntimeProgram"
+        priority: "P0"
+        done: true
+      - id: "M0.1-T08"
+        title: "crates/react-ir — ComponentId, Component, StateDefinition, ReactNode"
+        priority: "P0"
+        done: true
+      - id: "M0.1-T09"
+        title: "crates/runtime — Renderer trait + Runtime<R> instruction executor"
+        priority: "P0"
+        done: true
+      - id: "M0.1-T10"
+        title: "crates/renderer-memory — MemoryRenderer with node/children/property/text stores"
+        priority: "P0"
+        done: true
+      - id: "M0.1-T11"
+        title: "crates/compiler — lower(): React IR → RuntimeProgram"
+        priority: "P0"
+        done: true
+      - id: "M0.1-T12"
+        title: "E2E test counter_creates_tree green — button + text node in memory renderer"
+        priority: "P0"
+        done: true
+      - id: "M0.1-T13"
+        title: "Architecture guard: runtime must never depend on parser/AST/compiler (CI dep check)"
+        priority: "P2"
+        done: true
+
+  - id: "M0.2"
+    name: "Reactive Runtime Loop"
+    status: "in-progress"   # core loop green via events; FIFO scheduler queue + 14-criteria sweep remain
+    window: { start_week: 2, end_week: 4 }
+    color: "#22d3ee"
+    blurb: "The core reactive loop: event → state mutation → dirty component → scheduler → render → reconcile → patch → renderer. State keyed by (ComponentId, StateSlot); deterministic FIFO scheduler; minimal-diff reconciler."
+    tasks:
+      - id: "M0.2-T01"
+        title: "Reactive loop design locked: event → state → dirty → scheduler → render → diff → patch"
+        priority: "P0"
+        done: true
+      - id: "M0.2-T02"
+        title: "RuntimeTree + RuntimeNode store in runtime"
+        priority: "P0"
+        done: true
+      - id: "M0.2-T03"
+        title: "StateStore keyed by (ComponentId, StateSlot) — instance-scoped state"
+        priority: "P0"
+        done: true
+      - id: "M0.2-T04"
+        title: "Scheduler: deterministic FIFO queue with dedup (no concurrency yet)"
+        priority: "P0"
+        done: false
+      - id: "M0.2-T05"
+        title: "EventSystem: register/dispatch keyed by (NodeId, EventType)"
+        priority: "P0"
+        done: true
+      - id: "M0.2-T06"
+        title: "ComponentInstance model — definition vs mounted instance, independent state"
+        priority: "P0"
+        done: true
+      - id: "M0.2-T07"
+        title: "Patch enum: Create / Remove / Insert / Move / SetText / SetProperty"
+        priority: "P0"
+        done: true
+      - id: "M0.2-T08"
+        title: "Reconciler v0: id-keyed diff producing minimal Vec<Patch>"
+        priority: "P0"
+        done: true
+      - id: "M0.2-T09"
+        title: "Renderer trait migrated to apply(&Patch) — one patch stream for all renderers"
+        priority: "P0"
+        done: true
+      - id: "M0.2-T10"
+        title: "Runtime::flush() core loop: render → reconcile → apply → swap tree"
+        priority: "P0"
+        done: true
+      - id: "M0.2-T11"
+        title: "Counter E2E: click → SetText(\"1\") with no parent recreation"
+        priority: "P0"
+        done: true
+      - id: "M0.2-T12"
+        title: "Two-instance test: Counter A and Counter B hold independent state"
+        priority: "P0"
+        done: true
+      - id: "M0.2-T13"
+        title: "All 14 M0.2 acceptance criteria green (mount/unmount, batching, identity stability…)"
+        priority: "P0"
+        done: false
+      - id: "M0.2-T14"
+        title: "Todo app E2E through the full reactive loop"
+        priority: "P1"
+        done: true
+
+  - id: "M0.3"
+    name: "Compiler Frontend — JS/JSX → IR"
+    status: "in-progress"   # subset compiler real and verified; diagnostics breadth remains
+    window: { start_week: 4, end_week: 7 }
+    color: "#f472b6"
+    blurb: "Stop hand-building IR. Lexer → parser → AST → JS IR → React IR, and the first genuinely interesting transformation: compiling Counter from real source, including event-handler extraction."
+    tasks:
+      - id: "M0.3-T01"
+        title: "Lexer: JS tokens with source positions, JSX-aware"
+        priority: "P0"
+        done: true
+      - id: "M0.3-T02"
+        title: "Parser: expressions, statements, functions, arrow functions, JSX"
+        priority: "P0"
+        done: true
+      - id: "M0.3-T03"
+        title: "AST → JS IR lowering"
+        priority: "P0"
+        done: true
+      - id: "M0.3-T04"
+        title: "JS IR → React IR: component detection, useState → StateSlot, JSX → ReactNode"
+        priority: "P0"
+        done: true
+      - id: "M0.3-T05"
+        title: "Handler extraction: onClick={() => setCount(count + 1)} → ReadState/Add/WriteState/Schedule IR"
+        priority: "P0"
+        done: true
+      - id: "M0.3-T06"
+        title: "compile(source) → Artifact public API with format/ABI version stamps"
+        priority: "P0"
+        done: true
+      - id: "M0.3-T07"
+        title: "Counter compiled from real .jsx source E2E — no manually constructed IR"
+        priority: "P0"
+        done: true
+      - id: "M0.3-T08"
+        title: "Diagnostics: spanned errors with friendly messages"
+        priority: "P1"
+        done: false
+      - id: "M0.3-T09"
+        title: "IR snapshot tests + ir_version / language_version stamping"
+        priority: "P1"
+        done: false
+
+  - id: "M1"
+    name: "React Compatibility — Level 1"
+    status: "planned"   # spec = design complete in the R2N architecture sessions; planned = not started
+    window: { start_week: 7, end_week: 12 }
+    color: "#34d399"
+    blurb: "Behavioral compatibility with React core: full hook set, keys, context, effects, class components, error boundaries, portals, Suspense — validated by a behavioral conformance suite, not API presence."
+    tasks:
+      - id: "M1-T01"
+        title: "Props & children propagation through component calls"
+        priority: "P0"
+        done: false
+      - id: "M1-T02"
+        title: "Keys as first-class identity + keyed reconciliation (move vs recreate)"
+        priority: "P0"
+        done: false
+      - id: "M1-T03"
+        title: "Fragments"
+        priority: "P0"
+        done: false
+      - id: "M1-T04"
+        title: "Conditional rendering & lists (map → keyed children)"
+        priority: "P0"
+        done: false
+      - id: "M1-T05"
+        title: "useReducer — reducer IR + dispatch actions"
+        priority: "P0"
+        done: false
+      - id: "M1-T06"
+        title: "useEffect — setup/cleanup/dependency-change lifecycle"
+        priority: "P0"
+        done: false
+      - id: "M1-T07"
+        title: "useLayoutEffect — synchronous pre-commit ordering"
+        priority: "P1"
+        done: false
+      - id: "M1-T08"
+        title: "useMemo / useCallback with dependency-tracked caching"
+        priority: "P1"
+        done: false
+      - id: "M1-T09"
+        title: "useRef — stable identity across renders"
+        priority: "P0"
+        done: false
+      - id: "M1-T10"
+        title: "useContext — Context / Provider / Consumer + value propagation"
+        priority: "P0"
+        done: false
+      - id: "M1-T11"
+        title: "useId"
+        priority: "P2"
+        done: false
+      - id: "M1-T12"
+        title: "Class components — state, props, lifecycle methods"
+        priority: "P1"
+        done: false
+      - id: "M1-T13"
+        title: "Error boundaries — capture, fallback, recovery"
+        priority: "P0"
+        done: false
+      - id: "M1-T14"
+        title: "Portals — logical parent vs rendering parent"
+        priority: "P1"
+        done: false
+      - id: "M1-T15"
+        title: "Suspense — Active → Suspended → Resolved with fallback"
+        priority: "P1"
+        done: false
+      - id: "M1-T16"
+        title: "StrictMode dev-only semantics kept out of production artifacts"
+        priority: "P1"
+        done: false
+      - id: "M1-T17"
+        title: "Conformance suite v1 — behavioral tests (observable behavior, not API presence)"
+        priority: "P0"
+        done: false
+      - id: "M1-T18"
+        title: "react_compatibility_version recorded per artifact"
+        priority: "P2"
+        done: false
+
+  - id: "M2"
+    name: "JavaScript Compatibility — Level 2"
+    status: "planned"   # spec = design complete in the R2N architecture sessions; planned = not started
+    window: { start_week: 12, end_week: 20 }
+    color: "#fbbf24"
+    blurb: "Full ECMAScript semantics in the compatibility engine: closures, classes, prototypes, coercion, exceptions, promises, generators, modules — the layer that makes arbitrary React code actually run."
+    tasks:
+      - id: "M2-T01"
+        title: "Full value model: Undefined/Null/Boolean/Number/BigInt/String/Symbol/Object/Function/External"
+        priority: "P0"
+        done: false
+      - id: "M2-T02"
+        title: "Objects — dynamic properties, prototypes, shape-friendly layout"
+        priority: "P0"
+        done: false
+      - id: "M2-T03"
+        title: "Closures & lexical environments with correct capture semantics"
+        priority: "P0"
+        done: false
+      - id: "M2-T04"
+        title: "Classes, this, new, prototype chain"
+        priority: "P0"
+        done: false
+      - id: "M2-T05"
+        title: "Equality & coercion — == vs ===, ToPrimitive, ToString/ToNumber"
+        priority: "P0"
+        done: false
+      - id: "M2-T06"
+        title: "Exceptions — try/catch/finally propagation across calls"
+        priority: "P0"
+        done: false
+      - id: "M2-T07"
+        title: "Promises + async/await with scheduler-driven continuations"
+        priority: "P0"
+        done: false
+      - id: "M2-T08"
+        title: "Generators & iterator protocol"
+        priority: "P1"
+        done: false
+      - id: "M2-T09"
+        title: "Modules — import/export/dynamic import + initialization order"
+        priority: "P0"
+        done: false
+      - id: "M2-T10"
+        title: "Destructuring, spread, rest"
+        priority: "P1"
+        done: false
+      - id: "M2-T11"
+        title: "Symbols, Proxy, Reflect"
+        priority: "P2"
+        done: false
+      - id: "M2-T12"
+        title: "RegExp support (embed engine or implement subset)"
+        priority: "P2"
+        done: false
+      - id: "M2-T13"
+        title: "GC strategy (tracing / refcount / hybrid) honoring observable lifetime semantics"
+        priority: "P0"
+        done: false
+      - id: "M2-T14"
+        title: "TypeScript type consumption → optimization hints only (semantics stay JS)"
+        priority: "P2"
+        done: false
+      - id: "M2-T15"
+        title: "test262-subset conformance harness + published compatibility score"
+        priority: "P0"
+        done: false
+
+  - id: "M3"
+    name: "Optimization Pipeline — Specialization"
+    status: "planned"   # spec = design complete in the R2N architecture sessions; planned = not started
+    window: { start_week: 20, end_week: 26 }
+    color: "#fb7185"
+    blurb: "Make unnecessary JavaScript semantics disappear when static analysis proves they aren't needed: analyzer → specialization → dual-tier execution, with a benchmark harness from day one."
+    tasks:
+      - id: "M3-T01"
+        title: "Static analyzer — purity, mutability, escape, constant, shape hints"
+        priority: "P0"
+        done: false
+      - id: "M3-T02"
+        title: "Specialization — dynamic op → typed field op when proven safe (user.name vs obj[key])"
+        priority: "P0"
+        done: false
+      - id: "M3-T03"
+        title: "Dual-tier execution — fast path + compatibility fallback path"
+        priority: "P0"
+        done: false
+      - id: "M3-T04"
+        title: "Component specialization — known component graph → specialized native IR"
+        priority: "P1"
+        done: false
+      - id: "M3-T05"
+        title: "Benchmark harness — startup, first render, update latency, reconcile, memory, binary size"
+        priority: "P0"
+        done: false
+      - id: "M3-T06"
+        title: "10-app benchmark corpus (counter → 10k rows → real apps)"
+        priority: "P0"
+        done: false
+      - id: "M3-T07"
+        title: "Baseline comparisons: reference React vs compatibility runtime vs optimized runtime"
+        priority: "P0"
+        done: false
+      - id: "M3-T08"
+        title: "Target Tier 1 met: startup 1.5×, memory −10–20%, UI ≈ parity"
+        priority: "P1"
+        done: false
+      - id: "M3-T09"
+        title: "Target Tier 2 met: startup 3–5×, memory −30–50%, UI 2–5×, CPU 2–10×"
+        priority: "P1"
+        done: false
+      - id: "M3-T10"
+        title: "Target Tier 3 met: startup 5–10×, memory −50–70%, UI 3–10×, CPU 5–20×+"
+        priority: "P2"
+        done: false
+
+  - id: "M4"
+    name: "Renderers — Native, WASM, Terminal"
+    status: "planned"   # spec = design complete in the R2N architecture sessions; planned = not started
+    window: { start_week: 26, end_week: 32 }
+    color: "#a78bfa"
+    blurb: "Every renderer consumes the same patch stream. Native widgets for real platforms; WASM artifact for the browser with zero JS at runtime; terminal as the cheap integration target."
+    tasks:
+      - id: "M4-T01"
+        title: "Renderer conformance tests — identical patch stream verified on every renderer"
+        priority: "P0"
+        done: false
+      - id: "M4-T02"
+        title: "Native renderer — real platform windows/widgets (component → runtime tree → native widget)"
+        priority: "P0"
+        done: false
+      - id: "M4-T03"
+        title: "WASM renderer — browser artifact with zero JavaScript at runtime"
+        priority: "P0"
+        done: false
+      - id: "M4-T04"
+        title: "Terminal renderer — cheap end-to-end integration target"
+        priority: "P2"
+        done: false
+      - id: "M4-T05"
+        title: "Per-platform event normalization into runtime Event"
+        priority: "P0"
+        done: false
+
+  - id: "M5"
+    name: "Multi-Runtime — Go & Elixir"
+    status: "planned"   # spec = design complete in the R2N architecture sessions; planned = not started
+    window: { start_week: 32, end_week: 38 }
+    color: "#38bdf8"
+    blurb: "Freeze Runtime ABI v1, then prove the artifact is language-independent: Go and Elixir runtimes passing exactly the same conformance suite as Rust."
+    tasks:
+      - id: "M5-T01"
+        title: "Freeze Runtime ABI v1 — ops, handles, errors, capabilities, discovery"
+        priority: "P0"
+        done: false
+      - id: "M5-T02"
+        title: "Artifact format spec — manifest + ABI version + IR + resources/assets"
+        priority: "P0"
+        done: false
+      - id: "M5-T03"
+        title: "Go runtime passing full conformance suite"
+        priority: "P0"
+        done: false
+      - id: "M5-T04"
+        title: "Elixir runtime passing full conformance suite"
+        priority: "P1"
+        done: false
+      - id: "M5-T05"
+        title: "Cross-runtime CI — same artifact executes on all runtimes"
+        priority: "P0"
+        done: false
+      - id: "M5-T06"
+        title: "Hot replacement — ReplaceComponentImplementation + deterministic state migration"
+        priority: "P1"
+        done: false
+
+  - id: "M6"
+    name: "Ecosystem Compatibility — Levels 3–5"
+    status: "planned"   # spec = design complete in the R2N architecture sessions; planned = not started
+    window: { start_week: 38, end_week: 50 }
+    color: "#4ade80"
+    blurb: "The hard part: npm-package and browser-API compatibility. Module resolution, router/state/data/UI/animation libraries, real-app corpus, and a published compatibility scorecard."
+    tasks:
+      - id: "M6-T01"
+        title: "Module/package resolution strategy (node_modules mapping, import maps)"
+        priority: "P0"
+        done: false
+      - id: "M6-T02"
+        title: "react-router compatibility"
+        priority: "P1"
+        done: false
+      - id: "M6-T03"
+        title: "State libraries — Redux, Zustand"
+        priority: "P1"
+        done: false
+      - id: "M6-T04"
+        title: "Data-fetching — TanStack Query subset"
+        priority: "P1"
+        done: false
+      - id: "M6-T05"
+        title: "Form libraries — React Hook Form subset"
+        priority: "P2"
+        done: false
+      - id: "M6-T06"
+        title: "UI libraries — MUI / Ant Design render subset"
+        priority: "P2"
+        done: false
+      - id: "M6-T07"
+        title: "Animation libraries — framer-motion subset"
+        priority: "P2"
+        done: false
+      - id: "M6-T08"
+        title: "Browser API layer — events, timers, fetch, storage"
+        priority: "P0"
+        done: false
+      - id: "M6-T09"
+        title: "Real-app corpus — TodoMVC, RealWorld, dashboard, 10k-row table"
+        priority: "P0"
+        done: false
+      - id: "M6-T10"
+        title: "Compatibility scorecard — React % / JS % / Web API % / Ecosystem %"
+        priority: "P0"
+        done: false
+
+  - id: "M7"
+    name: "Productionization — 1.0"
+    status: "planned"   # spec = design complete in the R2N architecture sessions; planned = not started
+    window: { start_week: 50, end_week: 56 }
+    color: "#e879f9"
+    blurb: "Ship it: CLI, artifact packaging, state-preserving hot reload, docs, semver policy — and the 1.0 exit test: a large existing React repo runs unchanged with no JavaScript at runtime."
+    tasks:
+      - id: "M7-T01"
+        title: "CLI — r2n build / run / check"
+        priority: "P0"
+        done: false
+      - id: "M7-T02"
+        title: "Production artifact packaging — runtime + compiled app + assets + config"
+        priority: "P0"
+        done: false
+      - id: "M7-T03"
+        title: "Dev workflow — hot reload with state-preserving component replacement"
+        priority: "P1"
+        done: false
+      - id: "M7-T04"
+        title: "Docs — guides, IR/ABI specs, tutorials"
+        priority: "P1"
+        done: false
+      - id: "M7-T05"
+        title: "Semver + IR forward-compatibility policy"
+        priority: "P1"
+        done: false
+      - id: "M7-T06"
+        title: "1.0 exit test — large existing React repo runs unchanged, zero JS at runtime"
+        priority: "P0"
+        done: false
+

@@ -1,0 +1,11 @@
+[package]
+name = "r2n-compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "R2N compiler orchestration: parse -> lower -> artifact"
+
+[dependencies]
+r2n-ast = { path = "../r2n-ast" }
+r2n-parser = { path = "../r2n-parser" }
+r2n-ir = { path = "../r2n-ir" }

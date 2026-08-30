@@ -1,0 +1,10 @@
+// TodoList: demonstrates keyed list rendering + reconciliation via .map.
+component TodoList() {
+    let items = ["a", "b", "c"];
+    return (
+        <ul>
+            {items.map((x) => <li key={x}>{x}</li>)}
+        </ul>
+    );
+}
+export default TodoList;

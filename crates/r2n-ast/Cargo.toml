@@ -1,0 +1,9 @@
+[package]
+name = "r2n-ast"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "R2N source-level AST and literal/operator types"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

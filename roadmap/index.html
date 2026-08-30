@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>R2N — Roadmap &amp; Execution Plan</title>
+<style>
+:root{
+  --bg:#070b14; --panel:#0f1626; --panel2:#141d33; --line:#22304a;
+  --text:#e8eefc; --muted:#93a4c3; --accent:#7c5cff; --accent2:#22d3ee;
+  --good:#34d399; --warn:#fbbf24; --danger:#fb7185;
+  --p0:#f472b6; --p1:#22d3ee; --p2:#8b9bb8;
+  --radius:16px; --shadow:0 10px 40px rgba(0,0,0,.45);
+}
+html.light{
+  --bg:#eef2fa; --panel:#ffffff; --panel2:#f5f7fd; --line:#d9e2f3;
+  --text:#111a2e; --muted:#5b6b85; --shadow:0 10px 30px rgba(30,50,100,.12);
+}
+*{box-sizing:border-box; margin:0; padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg); color:var(--text);
+  font-family:"Segoe UI", ui-sans-serif, system-ui, -apple-system, Roboto, Arial, sans-serif;
+  min-height:100vh; overflow-x:hidden;
+}
+.mono{font-family:ui-monospace, "Cascadia Code", Consolas, monospace}
+
+/* ---------- animated background ---------- */
+.orb{position:fixed; border-radius:50%; filter:blur(95px); opacity:.30; z-index:0; pointer-events:none; animation:drift 22s ease-in-out infinite alternate}
+.orb-a{width:46vw; height:46vw; left:-12vw; top:-14vw; background:#7c5cff}
+.orb-b{width:38vw; height:38vw; right:-10vw; top:24vh; background:#22d3ee; animation-delay:-7s}
+.orb-c{width:34vw; height:34vw; left:28vw; bottom:-18vw; background:#f472b6; animation-delay:-13s; opacity:.18}
+@keyframes drift{from{transform:translate(0,0) scale(1)} to{transform:translate(6vw,4vh) scale(1.15)}}
+.grid-overlay{position:fixed; inset:0; z-index:0; pointer-events:none; opacity:.5;
+  background-image:linear-gradient(rgba(120,140,190,.07) 1px, transparent 1px), linear-gradient(90deg, rgba(120,140,190,.07) 1px, transparent 1px);
+  background-size:44px 44px;
+  mask-image:radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+}
+.wrap{position:relative; z-index:1; max-width:1240px; margin:0 auto; padding:0 22px 80px}
+
+/* ---------- top progress strip ---------- */
+#topstrip{position:fixed; top:0; left:0; height:3px; width:0%; z-index:50;
+  background:linear-gradient(90deg, var(--accent), var(--accent2)); box-shadow:0 0 12px var(--accent);
+  transition:width .6s cubic-bezier(.22,1,.36,1)}
+
+/* ---------- header ---------- */
+header.top{display:flex; align-items:center; gap:16px; padding:26px 0 10px; flex-wrap:wrap}
+.logo{width:52px; height:52px; flex:0 0 auto; filter:drop-shadow(0 0 14px rgba(124,92,255,.55)); animation:pulse 3.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{filter:drop-shadow(0 0 10px rgba(124,92,255,.45))} 50%{filter:drop-shadow(0 0 22px rgba(34,211,238,.65))}}
+.titleblock h1{font-size:1.7rem; letter-spacing:.5px; line-height:1.1}
+.titleblock h1 .grad{background:linear-gradient(90deg,var(--accent),var(--accent2)); -webkit-background-clip:text; background-clip:text; color:transparent}
+.titleblock .sub{color:var(--muted); font-size:.86rem; margin-top:4px; max-width:640px}
+.top-right{margin-left:auto; display:flex; align-items:center; gap:12px}
+.clock{text-align:right}
+.clock .t{font-size:1.25rem; font-weight:600; letter-spacing:1px}
+.clock .d{color:var(--muted); font-size:.75rem}
+.live{display:inline-flex; align-items:center; gap:6px; font-size:.72rem; color:var(--good); border:1px solid color-mix(in srgb, var(--good) 40%, transparent); padding:3px 10px; border-radius:999px}
+.live i{width:7px; height:7px; border-radius:50%; background:var(--good); animation:blink 1.4s infinite}
+@keyframes blink{0%,100%{opacity:1} 50%{opacity:.25}}
+#themeBtn{background:var(--panel); border:1px solid var(--line); color:var(--text); width:40px; height:40px; border-radius:12px; cursor:pointer; font-size:1.05rem; transition:transform .2s, border-color .2s}
+#themeBtn:hover{transform:translateY(-2px); border-color:var(--accent)}
+
+/* ---------- hero ---------- */
+.hero{display:grid; grid-template-columns:300px 1fr; gap:18px; margin-top:18px}
+@media(max-width:860px){.hero{grid-template-columns:1fr}}
+.card{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); padding:20px}
+.ring-card{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; position:relative; overflow:hidden}
+.ring-card::before{content:""; position:absolute; inset:-40%; background:conic-gradient(from 0deg, transparent 0 70%, rgba(124,92,255,.12) 85%, transparent 100%); animation:spin 6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.ringwrap{position:relative; width:180px; height:180px}
+.ringwrap svg{transform:rotate(-90deg)}
+.ringtrack{fill:none; stroke:var(--panel2); stroke-width:12}
+.ringfill{fill:none; stroke:url(#ringgrad); stroke-width:12; stroke-linecap:round; transition:stroke-dashoffset .9s cubic-bezier(.22,1,.36,1)}
+.ringcenter{position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center}
+.ringcenter .big{font-size:2.5rem; font-weight:700; letter-spacing:-1px}
+.ringcenter .lbl{color:var(--muted); font-size:.72rem; text-transform:uppercase; letter-spacing:2px}
+#ringSub{color:var(--muted); font-size:.8rem; text-align:center}
+
+.statgrid{display:grid; grid-template-columns:repeat(3,1fr); gap:14px}
+@media(max-width:640px){.statgrid{grid-template-columns:repeat(2,1fr)}}
+.stat{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:16px 18px; box-shadow:var(--shadow); position:relative; overflow:hidden}
+.stat::after{content:""; position:absolute; left:0; top:0; width:100%; height:2px; background:linear-gradient(90deg,var(--accent),var(--accent2)); opacity:.7}
+.stat .n{font-size:1.9rem; font-weight:700}
+.stat .l{color:var(--muted); font-size:.75rem; text-transform:uppercase; letter-spacing:1.5px; margin-top:2px}
+.stat .n .u{font-size:1rem; color:var(--muted)}
+
+/* ---------- tabs ---------- */
+nav.tabs{display:flex; gap:6px; margin:26px 0 18px; flex-wrap:wrap; background:var(--panel); padding:6px; border-radius:14px; border:1px solid var(--line); width:fit-content; max-width:100%}
+nav.tabs button{background:transparent; border:0; color:var(--muted); padding:9px 18px; border-radius:10px; cursor:pointer; font-size:.9rem; font-weight:600; transition:.2s; position:relative}
+nav.tabs button:hover{color:var(--text)}
+nav.tabs button.active{color:#fff; background:linear-gradient(120deg,var(--accent),#5a3ee8); box-shadow:0 4px 18px rgba(124,92,255,.35)}
+html.light nav.tabs button.active{color:#fff}
+section.view{display:none; animation:fadein .45s ease}
+section.view.active{display:block}
+@keyframes fadein{from{opacity:0; transform:translateY(8px)} to{opacity:1; transform:none}}
+
+/* ---------- overview ---------- */
+.pillars{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:20px}
+@media(max-width:860px){.pillars{grid-template-columns:1fr}}
+.pillar{background:linear-gradient(160deg, var(--panel), var(--panel2)); border:1px solid var(--line); border-radius:var(--radius); padding:18px; transition:transform .25s, border-color .25s}
+.pillar:hover{transform:translateY(-4px); border-color:var(--accent)}
+.pillar .ic{font-size:1.5rem; margin-bottom:8px; display:block}
+.pillar h3{font-size:1rem; margin-bottom:6px}
+.pillar p{color:var(--muted); font-size:.84rem; line-height:1.5}
+.h2row{display:flex; align-items:baseline; gap:12px; margin:26px 0 12px}
+.h2row h2{font-size:1.15rem}
+.h2row .hint{color:var(--muted); font-size:.8rem}
+.ladder{display:flex; flex-direction:column; gap:8px}
+.rung{display:flex; align-items:center; gap:14px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 16px; opacity:0; transform:translateX(-18px); animation:slidein .5s forwards}
+@keyframes slidein{to{opacity:1; transform:none}}
+.rung .ln{font-weight:700; width:52px; flex:0 0 auto; color:var(--accent2)}
+.rung .nm{font-weight:600; width:230px; flex:0 0 auto}
+.rung .dt{color:var(--muted); font-size:.84rem; flex:1}
+.rung .ms{font-size:.72rem; border:1px solid var(--line); color:var(--muted); border-radius:999px; padding:3px 10px; white-space:nowrap}
+.miniphases{display:flex; flex-direction:column; gap:8px}
+.miniphase{display:grid; grid-template-columns:70px 1fr 120px 54px; align-items:center; gap:12px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px 14px}
+.miniphase .id{font-weight:700; font-size:.85rem}
+.miniphase .nm{font-size:.88rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.miniphase .pct{font-size:.8rem; color:var(--muted); text-align:right}
+@media(max-width:640px){.miniphase{grid-template-columns:60px 1fr 50px}.miniphase .mpbar,.miniphase .pct{display:none}}
+.bar{height:8px; background:var(--panel2); border-radius:99px; overflow:hidden; position:relative}
+.bar .fill{height:100%; border-radius:99px; background:linear-gradient(90deg,var(--accent),var(--accent2)); transition:width .6s cubic-bezier(.22,1,.36,1); position:relative; overflow:hidden}
+.bar .fill::after{content:""; position:absolute; inset:0; background:linear-gradient(110deg, transparent 20%, rgba(255,255,255,.35) 50%, transparent 80%); transform:translateX(-100%); animation:shimmer 2.6s infinite}
+@keyframes shimmer{to{transform:translateX(100%)}}
+.mpbar{height:7px}
+.nextup{display:flex; flex-direction:column; gap:6px}
+.nextup .nu{display:flex; gap:10px; align-items:baseline; padding:9px 12px; background:var(--panel2); border-radius:10px; font-size:.88rem}
+.nextup .nu .pid{color:var(--accent2); font-weight:700; font-size:.78rem; flex:0 0 52px}
+.nextup .nu .pp{font-size:.68rem; font-weight:700; border-radius:6px; padding:1px 7px; flex:0 0 auto}
+.pp.P0{background:rgba(244,114,182,.15); color:var(--p0)}
+.pp.P1{background:rgba(34,211,238,.15); color:var(--p1)}
+.pp.P2{background:rgba(139,155,184,.15); color:var(--p2)}
+
+/* ---------- pipeline svg ---------- */
+.svgcard{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); padding:10px; overflow-x:auto}
+.svgcard svg{min-width:1100px; width:100%; height:auto; display:block}
+.pbox{fill:var(--panel2); stroke-width:1.6; rx:12}
+.pbox.src{stroke:#64748b} .pbox.ir{stroke:#7c5cff} .pbox.opt{stroke:#22d3ee} .pbox.art{stroke:#34d399} .pbox.rt{stroke:#38bdf8} .pbox.rnd{stroke:#a78bfa}
+.ptxt{fill:var(--text); font-size:14px; font-weight:600; text-anchor:middle}
+.psub{fill:var(--muted); font-size:9.5px; text-anchor:middle}
+.flow{stroke:#3b4d75; stroke-width:1.6; stroke-dasharray:6 6; animation:dashmove 1.2s linear infinite; fill:none}
+@keyframes dashmove{to{stroke-dashoffset:-12}}
+.flowhot{stroke:var(--accent)}
+.worldlbl{fill:var(--muted); font-size:10px; letter-spacing:3px; text-anchor:middle}
+.divider{stroke:#2c3c5f; stroke-width:1; stroke-dasharray:2 6}
+
+/* ---------- phases / checklist ---------- */
+.controls{display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:16px}
+.chip{background:var(--panel); border:1px solid var(--line); color:var(--muted); border-radius:999px; padding:7px 16px; font-size:.82rem; font-weight:600; cursor:pointer; transition:.2s}
+.chip:hover{color:var(--text)}
+.chip.active{background:linear-gradient(120deg,var(--accent),#5a3ee8); color:#fff; border-color:transparent}
+#search{flex:1; min-width:200px; background:var(--panel); border:1px solid var(--line); color:var(--text); border-radius:12px; padding:9px 14px; font-size:.88rem; outline:none}
+#search:focus{border-color:var(--accent)}
+.phase{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); margin-bottom:14px; box-shadow:var(--shadow); overflow:hidden; transition:border-color .25s}
+.phase:hover{border-color:color-mix(in srgb, var(--pc) 55%, var(--line))}
+.phase.complete{border-color:color-mix(in srgb, var(--good) 55%, var(--line))}
+.phead{display:grid; grid-template-columns:74px 1fr 220px 26px; gap:14px; align-items:center; padding:16px 18px; cursor:pointer; user-select:none}
+@media(max-width:760px){.phead{grid-template-columns:60px 1fr 26px}.pprog{display:none}}
+.pbadge{width:64px; height:44px; border-radius:12px; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:.8rem; color:#fff; background:linear-gradient(135deg, var(--pc), color-mix(in srgb, var(--pc) 55%, #000)); box-shadow:0 4px 14px color-mix(in srgb, var(--pc) 40%, transparent)}
+.pinfo h3{font-size:1rem; display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+.pinfo .pblurb{color:var(--muted); font-size:.8rem; margin-top:4px; line-height:1.45}
+.bstatus{font-size:.66rem; font-weight:800; letter-spacing:1px; padding:3px 9px; border-radius:6px}
+.bstatus.spec{background:rgba(251,191,36,.14); color:var(--warn)}
+.bstatus.planned{background:rgba(139,155,184,.14); color:var(--muted)}
+.bstatus.done{background:rgba(52,211,153,.16); color:var(--good)}
+.pprog{display:flex; flex-direction:column; gap:5px}
+.pprog .row1{display:flex; justify-content:space-between; font-size:.74rem; color:var(--muted)}
+.chev{color:var(--muted); transition:transform .3s; text-align:center}
+.phase.open .chev{transform:rotate(180deg)}
+.pbody{display:grid; grid-template-rows:0fr; transition:grid-template-rows .4s cubic-bezier(.22,1,.36,1)}
+.phase.open .pbody{grid-template-rows:1fr}
+.pbody-in{overflow:hidden; min-height:0}
+.tasks{padding:4px 18px 16px; border-top:1px dashed var(--line); display:flex; flex-direction:column; gap:2px}
+.task{display:flex; align-items:center; gap:12px; padding:8px 6px; border-radius:10px; cursor:pointer; transition:background .15s}
+.task:hover{background:var(--panel2)}
+.task input{position:absolute; opacity:0; pointer-events:none}
+.tbox{width:20px; height:20px; flex:0 0 auto; border-radius:6px; border:2px solid var(--line); display:flex; align-items:center; justify-content:center; transition:.2s; background:var(--panel2)}
+.tbox svg{width:12px; height:12px; stroke:#fff; stroke-width:3.2; fill:none; stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:20; stroke-dashoffset:20; transition:stroke-dashoffset .25s .05s}
+.task.done .tbox{background:linear-gradient(135deg,var(--good),#0ea5a0); border-color:transparent; box-shadow:0 2px 10px rgba(52,211,153,.4)}
+.task.done .tbox svg{stroke-dashoffset:0}
+.tt{flex:1; font-size:.9rem; line-height:1.4}
+.task.done .tt{color:var(--muted); text-decoration:line-through; text-decoration-color:rgba(148,164,195,.5)}
+.prio{font-size:.66rem; font-weight:800; border-radius:6px; padding:2px 8px; flex:0 0 auto}
+.prio.P0{background:rgba(244,114,182,.14); color:var(--p0)}
+.prio.P1{background:rgba(34,211,238,.14); color:var(--p1)}
+.prio.P2{background:rgba(139,155,184,.14); color:var(--p2)}
+.task.hidden{display:none}
+.phase.hidden{display:none}
+.flash{animation:flash .6s}
+@keyframes flash{0%{background:rgba(124,92,255,.25)} 100%{background:transparent}}
+
+/* ---------- timeline ---------- */
+.gantt{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:20px; box-shadow:var(--shadow); overflow-x:auto}
+.ginner{min-width:900px}
+.ghead{display:grid; grid-template-columns:220px 1fr; gap:14px; margin-bottom:8px}
+.gscale{position:relative; height:22px; display:flex}
+.gscale span{flex:1; color:var(--muted); font-size:.68rem; border-left:1px solid var(--line); padding-left:5px}
+.grow{display:grid; grid-template-columns:220px 1fr; gap:14px; align-items:center; margin-bottom:10px}
+.glabel{font-size:.84rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.glabel .wid{color:var(--muted); font-weight:400; font-size:.72rem; display:block}
+.gtrack{position:relative; height:26px; background:var(--panel2); border-radius:8px}
+.gbar{position:absolute; top:3px; bottom:3px; border-radius:6px; background:linear-gradient(90deg, var(--gc), color-mix(in srgb, var(--gc) 55%, #0b1020)); display:flex; align-items:center; padding:0 8px; font-size:.68rem; color:#fff; font-weight:700; min-width:40px; animation:growbar .8s cubic-bezier(.22,1,.36,1) backwards; box-shadow:0 2px 10px color-mix(in srgb, var(--gc) 45%, transparent)}
+@keyframes growbar{from{transform:scaleX(0); transform-origin:left; opacity:0} to{transform:none; opacity:1}}
+.gtoday{position:absolute; top:-6px; bottom:-6px; width:2px; background:var(--danger); box-shadow:0 0 8px var(--danger); z-index:2}
+.gtoday::after{content:"TODAY"; position:absolute; top:-16px; left:-19px; font-size:.58rem; font-weight:800; color:var(--danger); letter-spacing:1px}
+
+/* ---------- targets ---------- */
+.tgrid{display:grid; grid-template-columns:1fr 1fr; gap:16px}
+@media(max-width:900px){.tgrid{grid-template-columns:1fr}}
+table.perf{width:100%; border-collapse:collapse; font-size:.86rem}
+table.perf th{color:var(--muted); text-transform:uppercase; font-size:.68rem; letter-spacing:1px; text-align:left; padding:8px 10px; border-bottom:1px solid var(--line)}
+table.perf td{padding:12px 10px; border-bottom:1px solid var(--line)}
+table.perf tr:last-child td{border-bottom:0}
+table.perf .tier{font-weight:700}
+.metric{display:inline-block; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:3px 10px; font-weight:700; font-size:.8rem; color:var(--accent2)}
+.benchwrap{display:flex; flex-wrap:wrap; gap:8px; margin-top:12px}
+.bench{background:var(--panel2); border:1px solid var(--line); color:var(--muted); border-radius:999px; padding:5px 13px; font-size:.78rem; transition:.2s}
+.bench:hover{color:var(--text); border-color:var(--accent); transform:translateY(-2px)}
+.dod{list-style:none; display:flex; flex-direction:column; gap:8px}
+.dod li{display:flex; gap:10px; font-size:.87rem; color:var(--muted); line-height:1.5}
+.dod li::before{content:"◆"; color:var(--accent2); font-size:.7rem; margin-top:3px}
+.dod li strong{color:var(--text)}
+
+/* ---------- footer ---------- */
+footer{margin-top:30px; padding-top:18px; border-top:1px solid var(--line); display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+.btn{background:var(--panel); border:1px solid var(--line); color:var(--text); padding:9px 18px; border-radius:11px; cursor:pointer; font-size:.84rem; font-weight:600; transition:.2s}
+.btn:hover{border-color:var(--accent); transform:translateY(-1px)}
+.btn.danger:hover{border-color:var(--danger); color:var(--danger)}
+#saved{color:var(--good); font-size:.78rem; opacity:0; transition:opacity .4s}
+#saved.show{opacity:1}
+.footnote{color:var(--muted); font-size:.75rem; margin-top:10px; line-height:1.6}
+a{color:var(--accent2)}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001s !important; transition-duration:.001s !important}
+}
+</style>
+</head>
+<body>
+<div class="orb orb-a"></div><div class="orb orb-b"></div><div class="orb orb-c"></div>
+<div class="grid-overlay"></div>
+<div id="topstrip"></div>
+
+<div class="wrap">
+  <header class="top">
+    <svg class="logo" viewBox="0 0 64 64" aria-hidden="true">
+      <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#22d3ee"/>
+      </linearGradient></defs>
+      <polygon points="32,3 58,17 58,47 32,61 6,47 6,17" fill="none" stroke="url(#lg)" stroke-width="3"/>
+      <polygon points="32,14 48,23 48,41 32,50 16,41 16,23" fill="url(#lg)" opacity=".16"/>
+      <text x="32" y="38" text-anchor="middle" font-size="15" font-weight="800" fill="url(#lg)" font-family="Segoe UI, sans-serif">R2N</text>
+    </svg>
+    <div class="titleblock">
+      <h1>R2N <span class="grad">Roadmap</span> — React to Native</h1>
+      <div class="sub">Native compiler + runtime platform that executes existing React applications with <strong>zero JavaScript at runtime</strong>. Interactive tracker — your check-offs are saved live in this browser.</div>
+    </div>
+    <div class="top-right">
+      <span class="live"><i></i>REALTIME</span>
+      <div class="clock"><div class="t mono" id="clock">--:--:--</div><div class="d" id="dateline"></div></div>
+      <button id="themeBtn" title="Toggle light/dark theme">🌙</button>
+    </div>
+  </header>
+
+  <div class="hero">
+    <div class="card ring-card">
+      <div class="ringwrap">
+        <svg width="180" height="180" viewBox="0 0 180 180">
+          <defs><linearGradient id="ringgrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#22d3ee"/>
+          </linearGradient></defs>
+          <circle class="ringtrack" cx="90" cy="90" r="70"/>
+          <circle class="ringfill" id="ringfill" cx="90" cy="90" r="70" stroke-dasharray="439.82" stroke-dashoffset="439.82"/>
+        </svg>
+        <div class="ringcenter"><div class="big" id="pctBig">0%</div><div class="lbl">complete</div></div>
+      </div>
+      <div id="ringSub">0 of 0 tasks done</div>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:14px">
+      <div class="statgrid">
+        <div class="stat"><div class="n" id="stTotal">0</div><div class="l">Total tasks</div></div>
+        <div class="stat"><div class="n" id="stDone" style="color:var(--good)">0</div><div class="l">Completed</div></div>
+        <div class="stat"><div class="n" id="stLeft">0</div><div class="l">Remaining</div></div>
+        <div class="stat"><div class="n" id="stP0">0</div><div class="l">P0 remaining</div></div>
+        <div class="stat"><div class="n" id="stPhases">0<span class="u">/10</span></div><div class="l">Phases complete</div></div>
+        <div class="stat"><div class="n">56<span class="u"> wks</span></div><div class="l">Planning horizon</div></div>
+      </div>
+      <div class="card" style="padding:16px 18px">
+        <div style="font-size:.72rem; text-transform:uppercase; letter-spacing:2px; color:var(--muted); margin-bottom:8px">Next up — first pending P0s</div>
+        <div class="nextup" id="nextup"></div>
+      </div>
+    </div>
+  </div>
+
+  <nav class="tabs" role="tablist">
+    <button class="active" data-view="overview">Overview</button>
+    <button data-view="pipeline">Pipeline</button>
+    <button data-view="phases">Phases &amp; Checklist</button>
+    <button data-view="timeline">Timeline</button>
+    <button data-view="targets">Performance Targets</button>
+  </nav>
+
+  <!-- ================= OVERVIEW ================= -->
+  <section class="view active" id="view-overview">
+    <div class="pillars" id="pillars"></div>
+    <div class="h2row"><h2>Compatibility ladder</h2><span class="hint">each level is behavioral, not API-presence — promoted only by conformance results</span></div>
+    <div class="ladder" id="ladder"></div>
+    <div class="h2row"><h2>Phase progress</h2><span class="hint">updates live as you check items off</span></div>
+    <div class="miniphases" id="miniphases"></div>
+  </section>
+
+  <!-- ================= PIPELINE ================= -->
+  <section class="view" id="view-pipeline">
+    <div class="h2row"><h2>Compile &amp; execution pipeline</h2><span class="hint">existing React source is an input format — JavaScript is never a runtime dependency</span></div>
+    <div class="svgcard">
+      <svg viewBox="0 0 1440 470" role="img" aria-label="Compile pipeline from React source through IRs to native runtimes">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#3b4d75"/>
+          </marker>
+        </defs>
+        <text class="worldlbl" x="540" y="18">SOURCE WORLD</text>
+        <text class="worldlbl" x="1250" y="18">RUNTIME WORLD</text>
+        <line class="divider" x1="1072" y1="26" x2="1072" y2="106"/>
+        <!-- main chain path (invisible, for particles) -->
+        <path id="p-chain" d="M99,65 H1416" fill="none" stroke="none"/>
+        <path id="p-opt" d="M1338,94 C1338,160 1060,150 872,190" fill="none" stroke="none"/>
+        <path id="p-r1" d="M600,248 L450,300" fill="none" stroke="none"/>
+        <path id="p-r2" d="M720,248 L720,300" fill="none" stroke="none"/>
+        <path id="p-r3" d="M840,248 L990,300" fill="none" stroke="none"/>
+        <!-- particles (under boxes) -->
+        <circle r="4.5" fill="#7c5cff" opacity=".95"><animateMotion dur="8s" repeatCount="indefinite"><mpath href="#p-chain"/></animateMotion></circle>
+        <circle r="4.5" fill="#22d3ee" opacity=".95"><animateMotion dur="8s" begin="2.7s" repeatCount="indefinite"><mpath href="#p-chain"/></animateMotion></circle>
+        <circle r="4.5" fill="#f472b6" opacity=".95"><animateMotion dur="8s" begin="5.4s" repeatCount="indefinite"><mpath href="#p-chain"/></animateMotion></circle>
+        <circle r="4" fill="#34d399" opacity=".95"><animateMotion dur="3.2s" repeatCount="indefinite"><mpath href="#p-opt"/></animateMotion></circle>
+        <circle r="3.5" fill="#38bdf8" opacity=".9"><animateMotion dur="2.2s" repeatCount="indefinite"><mpath href="#p-r1"/></animateMotion></circle>
+        <circle r="3.5" fill="#38bdf8" opacity=".9"><animateMotion dur="2.2s" begin=".7s" repeatCount="indefinite"><mpath href="#p-r2"/></animateMotion></circle>
+        <circle r="3.5" fill="#38bdf8" opacity=".9"><animateMotion dur="2.2s" begin="1.4s" repeatCount="indefinite"><mpath href="#p-r3"/></animateMotion></circle>
+        <!-- row 1: compile stages -->
+        <g id="stages"></g>
+        <!-- artifact -->
+        <rect class="pbox art" x="540" y="190" width="360" height="58" rx="12"/>
+        <text class="ptxt" x="720" y="215">Application Artifact</text>
+        <text class="psub" x="720" y="233">manifest · Runtime IR · assets · Runtime ABI v1 · zero JS</text>
+        <!-- runtimes -->
+        <rect class="pbox rt" x="350" y="300" width="200" height="58" rx="12"/>
+        <text class="ptxt" x="450" y="325">Rust Runtime</text>
+        <text class="psub" x="450" y="343">first implementation · conformance ✓</text>
+        <rect class="pbox rt" x="620" y="300" width="200" height="58" rx="12"/>
+        <text class="ptxt" x="720" y="325">Go Runtime</text>
+        <text class="psub" x="720" y="343">same conformance suite ✓</text>
+        <rect class="pbox rt" x="890" y="300" width="200" height="58" rx="12"/>
+        <text class="ptxt" x="990" y="325">Elixir Runtime</text>
+        <text class="psub" x="990" y="343">same conformance suite ✓</text>
+        <!-- renderer bar -->
+        <rect class="pbox rnd" x="300" y="410" width="840" height="46" rx="12"/>
+        <text class="ptxt" x="720" y="438" style="font-size:12.5px">Renderers — Memory · Native · WASM · Terminal  (all consume the same Patch stream)</text>
+        <!-- connectors -->
+        <g class="flows"></g>
+        <line class="flow flowhot" x1="1338" y1="94" x2="1338" y2="120" marker-end="url(#arrow)"/>
+        <line class="flow" x1="600" y1="248" x2="452" y2="298" marker-end="url(#arrow)"/>
+        <line class="flow" x1="720" y1="248" x2="720" y2="298" marker-end="url(#arrow)"/>
+        <line class="flow" x1="840" y1="248" x2="988" y2="298" marker-end="url(#arrow)"/>
+        <line class="flow" x1="450" y1="358" x2="450" y2="408" marker-end="url(#arrow)"/>
+        <line class="flow" x1="720" y1="358" x2="720" y2="408" marker-end="url(#arrow)"/>
+        <line class="flow" x1="990" y1="358" x2="990" y2="408" marker-end="url(#arrow)"/>
+      </svg>
+    </div>
+    <p class="footnote">Hover any stage for its role. The rule that keeps the architecture honest: <strong>the runtime never sees source code</strong> — no JSX, no JavaScript syntax, no AST. It executes compiled Runtime IR only.</p>
+  </section>
+
+  <!-- ================= PHASES ================= -->
+  <section class="view" id="view-phases">
+    <div class="controls">
+      <button class="chip active" data-mode="all">All</button>
+      <button class="chip" data-mode="pending">Pending</button>
+      <button class="chip" data-mode="done">Done</button>
+      <input id="search" type="search" placeholder="Search tasks… (e.g. reconciler, useState, WASM)">
+      <button class="chip" id="expandAll">Expand all</button>
+      <button class="chip" id="collapseAll">Collapse all</button>
+    </div>
+    <div id="phaseList"></div>
+  </section>
+
+  <!-- ================= TIMELINE ================= -->
+  <section class="view" id="view-timeline">
+    <div class="h2row"><h2>56-week execution timeline</h2><span class="hint">indicative windows — the dependency order is the contract, the dates are not</span></div>
+    <div class="gantt"><div class="ginner">
+      <div class="ghead"><div></div><div class="gscale" id="gscale"></div></div>
+      <div id="grows" style="position:relative"></div>
+    </div></div>
+  </section>
+
+  <!-- ================= TARGETS ================= -->
+  <section class="view" id="view-targets">
+    <div class="tgrid">
+      <div class="card">
+        <h2 style="font-size:1.05rem; margin-bottom:10px">Engineering targets — not promises</h2>
+        <table class="perf">
+          <thead><tr><th>Tier</th><th>Startup</th><th>Memory</th><th>UI updates</th><th>CPU work</th></tr></thead>
+          <tbody id="perfRows"></tbody>
+        </table>
+        <p class="footnote">UI apps are rarely CPU-bound: if the browser spends 8 ms on layout/paint, a 4× faster reconciler only yields ~1.3× total. The real win is native rendering (no DOM, no JS engine, no bindings) — component → runtime tree → native widget.</p>
+      </div>
+      <div class="card">
+        <h2 style="font-size:1.05rem; margin-bottom:10px">Benchmark suite</h2>
+        <p style="color:var(--muted); font-size:.85rem; line-height:1.5">Never optimize from intuition. Every benchmark compares three configurations: reference React vs compatibility runtime vs optimized native runtime.</p>
+        <div class="benchwrap" id="benchList"></div>
+        <h2 style="font-size:1.05rem; margin:18px 0 8px">Measured dimensions</h2>
+        <div class="benchwrap"><span class="bench">startup</span><span class="bench">time-to-interactive</span><span class="bench">first render</span><span class="bench">update latency</span><span class="bench">reconciliation</span><span class="bench">memory</span><span class="bench">allocations</span><span class="bench">binary size</span><span class="bench">battery</span></div>
+      </div>
+      <div class="card" style="grid-column:1/-1">
+        <h2 style="font-size:1.05rem; margin-bottom:10px">Definition of done — v1.0</h2>
+        <ul class="dod">
+          <li><strong>Vertical slice:</strong> counter source → compiler → artifact → Rust runtime → memory renderer, with no dependency on JavaScript or Node.js anywhere in the runtime.</li>
+          <li><strong>Real reactive loop:</strong> click → handler → state write → schedule → render → diff → minimal patch (SetText("1"), never recreate the parent).</li>
+          <li><strong>Instance semantics:</strong> two Counter instances hold independent state; state identity = component identity + hook position.</li>
+          <li><strong>Behavioral conformance:</strong> compatibility percentages published (React / JS / Web API / Ecosystem) instead of "the Counter works".</li>
+          <li><strong>Language-independent ABI:</strong> the same artifact executes on Rust, Go, and Elixir runtimes passing identical conformance suites.</li>
+          <li><strong>1.0 exit test:</strong> a large existing React repository compiles and runs unchanged — zero JavaScript at runtime.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <button class="btn" id="exportBtn">⬇ Export progress (JSON)</button>
+    <button class="btn" id="importBtn">⬆ Import progress</button>
+    <input type="file" id="importFile" accept=".json" style="display:none">
+    <button class="btn danger" id="resetBtn">↺ Reset</button>
+    <span id="saved">✓ saved</span>
+    <div class="footnote" style="width:100%">
+      Progress is stored live in this browser (localStorage). Use Export/Import to move it between machines.
+      Companion documents in this folder: <a href="ROADMAP.md">ROADMAP.md</a> · <a href="PLAN.md">PLAN.md</a> · <a href="CHECKLIST.md">CHECKLIST.md</a> · <a href="roadmap.yaml">roadmap.yaml</a> · <a href="roadmap.toml">roadmap.toml</a> · Generated 2026-08-29.
+    </div>
+  </footer>
+</div>
+
+<script>
+"use strict";
+const DATA = {"project":"R2N — React to Native","tagline":"Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime","updated":"2026-08-29","projectStart":"2026-08-29","horizonWeeks":56,"northStar":"A native compatibility platform capable of compiling existing React/JSX applications into a JavaScript-runtime-free executable representation, while progressively compiling their dynamic behavior into specialized native code.","pillars":[{"name":"Existing React compatibility","text":"Accept real-world React/JSX applications unchanged. Behavioral compatibility, not API-presence compatibility."},{"name":"Zero JavaScript at runtime","text":"Production executes native/WASM artifacts. No JS engine, no Node.js, no JS execution in the shipped runtime."},{"name":"Optimization beyond React","text":"Compile known behavior into specialized native code — fast path when static analysis proves it, compatibility path otherwise."}],"levels":[{"n":0,"name":"JSX","detail":"Elements, attributes, children, expressions","milestone":"M0.3"},{"n":1,"name":"React core","detail":"Components, hooks, reconciliation, context, suspense, portals","milestone":"M1"},{"n":2,"name":"JavaScript language","detail":"Full ECMAScript semantics: closures, classes, async, modules","milestone":"M2"},{"n":3,"name":"React ecosystem","detail":"Router, state, data, UI, animation libraries","milestone":"M6"},{"n":4,"name":"Browser APIs","detail":"DOM events, timers, fetch, storage compat layer","milestone":"M6"},{"n":5,"name":"Frameworks","detail":"Next.js/Vite-style app structures","milestone":"M6"},{"n":6,"name":"Arbitrary production applications","detail":"Large existing repos run unchanged","milestone":"M7"}],"targets":[{"tier":"Tier 1 — Compatibility runtime","startup":"1.5×","memory":"−10–20%","ui":"≈ parity","cpu":"—"},{"tier":"Tier 2 — Native IR optimization","startup":"3–5×","memory":"−30–50%","ui":"2–5×","cpu":"2–10×"},{"tier":"Tier 3 — Aggressive specialization","startup":"5–10×","memory":"−50–70%","ui":"3–10×","cpu":"5–20×+"}],"benchmarks":["Counter","TodoMVC","Large table","10,000-row list","Complex form","Dashboard","Animation-heavy UI","Large component tree","CPU-heavy app logic","Real-world React apps"],"phases":[{"id":"M0.1","name":"Foundation — Workspace & Vertical Slice","status":"spec","startW":1,"endW":2,"color":"#7c5cff","blurb":"Rust workspace, IR data models, runtime skeleton, memory renderer, and the first compiler pipeline: source → parser → AST → React IR → Runtime IR → runtime → memory renderer.","tasks":[{"t":"Project charter locked: three pillars (React compatibility, zero-JS runtime, specialization)","p":"P0","d":true},{"t":"Spec JS_IR.md v0.1 — value model, instruction set, closures, modules, async, exceptions, optimization metadata","p":"P0","d":true},{"t":"Spec REACT_IR.md v0.1 — components, elements, hooks, effects, reconciliation, keys, context, suspense, portals","p":"P0","d":true},{"t":"Spec RUNTIME_ABI.md v0.1 — handles, node/state/component ops, scheduler, capabilities, errors, versioning","p":"P0","d":true},{"t":"Create Rust workspace: root Cargo.toml + 8 crates (ast, parser, js-ir, react-ir, runtime-ir, runtime, renderer-memory, compiler)","p":"P0","d":false},{"t":"crates/ast — minimal Expr / BinaryOp / JsxElement / JsxChild model","p":"P0","d":false},{"t":"crates/runtime-ir — Value, NodeId, StateSlot, HandlerId, Instruction, RuntimeProgram","p":"P0","d":false},{"t":"crates/react-ir — ComponentId, Component, StateDefinition, ReactNode","p":"P0","d":false},{"t":"crates/runtime — Renderer trait + Runtime<R> instruction executor","p":"P0","d":false},{"t":"crates/renderer-memory — MemoryRenderer with node/children/property/text stores","p":"P0","d":false},{"t":"crates/compiler — lower(): React IR → RuntimeProgram","p":"P0","d":false},{"t":"E2E test counter_creates_tree green — button + text node in memory renderer","p":"P0","d":false},{"t":"Architecture guard: runtime must never depend on parser/AST/compiler (CI dep check)","p":"P2","d":false}]},{"id":"M0.2","name":"Reactive Runtime Loop","status":"spec","startW":2,"endW":4,"color":"#22d3ee","blurb":"The core reactive loop: event → state mutation → dirty component → scheduler → render → reconcile → patch → renderer. State keyed by (ComponentId, StateSlot); deterministic FIFO scheduler; minimal-diff reconciler.","tasks":[{"t":"Reactive loop design locked: event → state → dirty → scheduler → render → diff → patch","p":"P0","d":true},{"t":"RuntimeTree + RuntimeNode store in runtime","p":"P0","d":false},{"t":"StateStore keyed by (ComponentId, StateSlot) — instance-scoped state","p":"P0","d":false},{"t":"Scheduler: deterministic FIFO queue with dedup (no concurrency yet)","p":"P0","d":false},{"t":"EventSystem: register/dispatch keyed by (NodeId, EventType)","p":"P0","d":false},{"t":"ComponentInstance model — definition vs mounted instance, independent state","p":"P0","d":false},{"t":"Patch enum: Create / Remove / Insert / Move / SetText / SetProperty","p":"P0","d":false},{"t":"Reconciler v0: id-keyed diff producing minimal Vec<Patch>","p":"P0","d":false},{"t":"Renderer trait migrated to apply(&Patch) — one patch stream for all renderers","p":"P0","d":false},{"t":"Runtime::flush() core loop: render → reconcile → apply → swap tree","p":"P0","d":false},{"t":"Counter E2E: click → SetText(\"1\") with no parent recreation","p":"P0","d":false},{"t":"Two-instance test: Counter A and Counter B hold independent state","p":"P0","d":false},{"t":"All 14 M0.2 acceptance criteria green (mount/unmount, batching, identity stability…)","p":"P0","d":false},{"t":"Todo app E2E through the full reactive loop","p":"P1","d":false}]},{"id":"M0.3","name":"Compiler Frontend — JS/JSX → IR","status":"planned","startW":4,"endW":7,"color":"#f472b6","blurb":"Stop hand-building IR. Lexer → parser → AST → JS IR → React IR, and the first genuinely interesting transformation: compiling Counter from real source, including event-handler extraction.","tasks":[{"t":"Lexer: JS tokens with source positions, JSX-aware","p":"P0","d":false},{"t":"Parser: expressions, statements, functions, arrow functions, JSX","p":"P0","d":false},{"t":"AST → JS IR lowering","p":"P0","d":false},{"t":"JS IR → React IR: component detection, useState → StateSlot, JSX → ReactNode","p":"P0","d":false},{"t":"Handler extraction: onClick={() => setCount(count + 1)} → ReadState/Add/WriteState/Schedule IR","p":"P0","d":false},{"t":"compile(source) → Artifact public API with format/ABI version stamps","p":"P0","d":false},{"t":"Counter compiled from real .jsx source E2E — no manually constructed IR","p":"P0","d":false},{"t":"Diagnostics: spanned errors with friendly messages","p":"P1","d":false},{"t":"IR snapshot tests + ir_version / language_version stamping","p":"P1","d":false}]},{"id":"M1","name":"React Compatibility — Level 1","status":"planned","startW":7,"endW":12,"color":"#34d399","blurb":"Behavioral compatibility with React core: full hook set, keys, context, effects, class components, error boundaries, portals, Suspense — validated by a behavioral conformance suite, not API presence.","tasks":[{"t":"Props & children propagation through component calls","p":"P0","d":false},{"t":"Keys as first-class identity + keyed reconciliation (move vs recreate)","p":"P0","d":false},{"t":"Fragments","p":"P0","d":false},{"t":"Conditional rendering & lists (map → keyed children)","p":"P0","d":false},{"t":"useReducer — reducer IR + dispatch actions","p":"P0","d":false},{"t":"useEffect — setup/cleanup/dependency-change lifecycle","p":"P0","d":false},{"t":"useLayoutEffect — synchronous pre-commit ordering","p":"P1","d":false},{"t":"useMemo / useCallback with dependency-tracked caching","p":"P1","d":false},{"t":"useRef — stable identity across renders","p":"P0","d":false},{"t":"useContext — Context / Provider / Consumer + value propagation","p":"P0","d":false},{"t":"useId","p":"P2","d":false},{"t":"Class components — state, props, lifecycle methods","p":"P1","d":false},{"t":"Error boundaries — capture, fallback, recovery","p":"P0","d":false},{"t":"Portals — logical parent vs rendering parent","p":"P1","d":false},{"t":"Suspense — Active → Suspended → Resolved with fallback","p":"P1","d":false},{"t":"StrictMode dev-only semantics kept out of production artifacts","p":"P1","d":false},{"t":"Conformance suite v1 — behavioral tests (observable behavior, not API presence)","p":"P0","d":false},{"t":"react_compatibility_version recorded per artifact","p":"P2","d":false}]},{"id":"M2","name":"JavaScript Compatibility — Level 2","status":"planned","startW":12,"endW":20,"color":"#fbbf24","blurb":"Full ECMAScript semantics in the compatibility engine: closures, classes, prototypes, coercion, exceptions, promises, generators, modules — the layer that makes arbitrary React code actually run.","tasks":[{"t":"Full value model: Undefined/Null/Boolean/Number/BigInt/String/Symbol/Object/Function/External","p":"P0","d":false},{"t":"Objects — dynamic properties, prototypes, shape-friendly layout","p":"P0","d":false},{"t":"Closures & lexical environments with correct capture semantics","p":"P0","d":false},{"t":"Classes, this, new, prototype chain","p":"P0","d":false},{"t":"Equality & coercion — == vs ===, ToPrimitive, ToString/ToNumber","p":"P0","d":false},{"t":"Exceptions — try/catch/finally propagation across calls","p":"P0","d":false},{"t":"Promises + async/await with scheduler-driven continuations","p":"P0","d":false},{"t":"Generators & iterator protocol","p":"P1","d":false},{"t":"Modules — import/export/dynamic import + initialization order","p":"P0","d":false},{"t":"Destructuring, spread, rest","p":"P1","d":false},{"t":"Symbols, Proxy, Reflect","p":"P2","d":false},{"t":"RegExp support (embed engine or implement subset)","p":"P2","d":false},{"t":"GC strategy (tracing / refcount / hybrid) honoring observable lifetime semantics","p":"P0","d":false},{"t":"TypeScript type consumption → optimization hints only (semantics stay JS)","p":"P2","d":false},{"t":"test262-subset conformance harness + published compatibility score","p":"P0","d":false}]},{"id":"M3","name":"Optimization Pipeline — Specialization","status":"planned","startW":20,"endW":26,"color":"#fb7185","blurb":"Make unnecessary JavaScript semantics disappear when static analysis proves they aren't needed: analyzer → specialization → dual-tier execution, with a benchmark harness from day one.","tasks":[{"t":"Static analyzer — purity, mutability, escape, constant, shape hints","p":"P0","d":false},{"t":"Specialization — dynamic op → typed field op when proven safe (user.name vs obj[key])","p":"P0","d":false},{"t":"Dual-tier execution — fast path + compatibility fallback path","p":"P0","d":false},{"t":"Component specialization — known component graph → specialized native IR","p":"P1","d":false},{"t":"Benchmark harness — startup, first render, update latency, reconcile, memory, binary size","p":"P0","d":false},{"t":"10-app benchmark corpus (counter → 10k rows → real apps)","p":"P0","d":false},{"t":"Baseline comparisons: reference React vs compatibility runtime vs optimized runtime","p":"P0","d":false},{"t":"Target Tier 1 met: startup 1.5×, memory −10–20%, UI ≈ parity","p":"P1","d":false},{"t":"Target Tier 2 met: startup 3–5×, memory −30–50%, UI 2–5×, CPU 2–10×","p":"P1","d":false},{"t":"Target Tier 3 met: startup 5–10×, memory −50–70%, UI 3–10×, CPU 5–20×+","p":"P2","d":false}]},{"id":"M4","name":"Renderers — Native, WASM, Terminal","status":"planned","startW":26,"endW":32,"color":"#a78bfa","blurb":"Every renderer consumes the same patch stream. Native widgets for real platforms; WASM artifact for the browser with zero JS at runtime; terminal as the cheap integration target.","tasks":[{"t":"Renderer conformance tests — identical patch stream verified on every renderer","p":"P0","d":false},{"t":"Native renderer — real platform windows/widgets (component → runtime tree → native widget)","p":"P0","d":false},{"t":"WASM renderer — browser artifact with zero JavaScript at runtime","p":"P0","d":false},{"t":"Terminal renderer — cheap end-to-end integration target","p":"P2","d":false},{"t":"Per-platform event normalization into runtime Event","p":"P0","d":false}]},{"id":"M5","name":"Multi-Runtime — Go & Elixir","status":"planned","startW":32,"endW":38,"color":"#38bdf8","blurb":"Freeze Runtime ABI v1, then prove the artifact is language-independent: Go and Elixir runtimes passing exactly the same conformance suite as Rust.","tasks":[{"t":"Freeze Runtime ABI v1 — ops, handles, errors, capabilities, discovery","p":"P0","d":false},{"t":"Artifact format spec — manifest + ABI version + IR + resources/assets","p":"P0","d":false},{"t":"Go runtime passing full conformance suite","p":"P0","d":false},{"t":"Elixir runtime passing full conformance suite","p":"P1","d":false},{"t":"Cross-runtime CI — same artifact executes on all runtimes","p":"P0","d":false},{"t":"Hot replacement — ReplaceComponentImplementation + deterministic state migration","p":"P1","d":false}]},{"id":"M6","name":"Ecosystem Compatibility — Levels 3–5","status":"planned","startW":38,"endW":50,"color":"#4ade80","blurb":"The hard part: npm-package and browser-API compatibility. Module resolution, router/state/data/UI/animation libraries, real-app corpus, and a published compatibility scorecard.","tasks":[{"t":"Module/package resolution strategy (node_modules mapping, import maps)","p":"P0","d":false},{"t":"react-router compatibility","p":"P1","d":false},{"t":"State libraries — Redux, Zustand","p":"P1","d":false},{"t":"Data-fetching — TanStack Query subset","p":"P1","d":false},{"t":"Form libraries — React Hook Form subset","p":"P2","d":false},{"t":"UI libraries — MUI / Ant Design render subset","p":"P2","d":false},{"t":"Animation libraries — framer-motion subset","p":"P2","d":false},{"t":"Browser API layer — events, timers, fetch, storage","p":"P0","d":false},{"t":"Real-app corpus — TodoMVC, RealWorld, dashboard, 10k-row table","p":"P0","d":false},{"t":"Compatibility scorecard — React % / JS % / Web API % / Ecosystem %","p":"P0","d":false}]},{"id":"M7","name":"Productionization — 1.0","status":"planned","startW":50,"endW":56,"color":"#e879f9","blurb":"Ship it: CLI, artifact packaging, state-preserving hot reload, docs, semver policy — and the 1.0 exit test: a large existing React repo runs unchanged with no JavaScript at runtime.","tasks":[{"t":"CLI — r2n build / run / check","p":"P0","d":false},{"t":"Production artifact packaging — runtime + compiled app + assets + config","p":"P0","d":false},{"t":"Dev workflow — hot reload with state-preserving component replacement","p":"P1","d":false},{"t":"Docs — guides, IR/ABI specs, tutorials","p":"P1","d":false},{"t":"Semver + IR forward-compatibility policy","p":"P1","d":false},{"t":"1.0 exit test — large existing React repo runs unchanged, zero JS at runtime","p":"P0","d":false}]}]};
+const LS_KEY = "r2n.roadmap.progress.v1";
+const RING_C = 2 * Math.PI * 70;
+
+/* ---------- state ---------- */
+let overrides = {};
+try { overrides = JSON.parse(localStorage.getItem(LS_KEY) || "{}") || {}; } catch (e) { overrides = {}; }
+let filterMode = "all", query = "";
+
+/* ---------- helpers ---------- */
+const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+const tid = (p, i) => p.id + "-T" + String(i + 1).padStart(2, "0");
+const isDone = t => (overrides[t.id] === undefined) ? !!t.d : !!overrides[t.id];
+function save() {
+  localStorage.setItem(LS_KEY, JSON.stringify(overrides));
+  const s = document.getElementById("saved");
+  s.classList.add("show");
+  clearTimeout(save._t);
+  save._t = setTimeout(() => s.classList.remove("show"), 1400);
+}
+function phaseStats(ph) {
+  let done = 0;
+  ph.tasks.forEach(t => { if (isDone(t)) done++; });
+  return { done, total: ph.tasks.length, pct: ph.tasks.length ? Math.round(done / ph.tasks.length * 100) : 0 };
+}
+function overall() {
+  let d = 0, n = 0;
+  DATA.phases.forEach(ph => phaseStats(ph)); // warm
+  DATA.phases.forEach(ph => ph.tasks.forEach(t => { n++; if (isDone(t)) d++; }));
+  return { d, n, pct: n ? Math.round(d / n * 100) : 0 };
+}
+
+/* ---------- clock (realtime) ---------- */
+function tick() {
+  const now = new Date();
+  document.getElementById("clock").textContent = now.toLocaleTimeString("en-GB");
+  document.getElementById("dateline").textContent = now.toLocaleDateString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric" });
+}
+setInterval(tick, 1000); tick();
+
+/* ---------- theme ---------- */
+const themeBtn = document.getElementById("themeBtn");
+function applyTheme(th) {
+  document.documentElement.classList.toggle("light", th === "light");
+  themeBtn.textContent = th === "light" ? "☀️" : "🌙";
+  localStorage.setItem("r2n.roadmap.theme", th);
+}
+themeBtn.addEventListener("click", () => applyTheme(document.documentElement.classList.contains("light") ? "dark" : "light"));
+applyTheme(localStorage.getItem("r2n.roadmap.theme") || "dark");
+
+/* ---------- tabs ---------- */
+document.querySelectorAll("nav.tabs button").forEach(b => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll("nav.tabs button").forEach(x => x.classList.toggle("active", x === b));
+    document.querySelectorAll("section.view").forEach(v => v.classList.toggle("active", v.id === "view-" + b.dataset.view));
+  });
+});
+
+/* ---------- static renders ---------- */
+(function renderPillars() {
+  const icons = ["🎯", "🚫", "⚡"];
+  document.getElementById("pillars").innerHTML = DATA.pillars.map((p, i) =>
+    `<div class="pillar" style="animation:slidein .5s ${i * .1}s backwards"><span class="ic">${icons[i]}</span><h3>${esc(p.name)}</h3><p>${esc(p.text)}</p></div>`).join("");
+})();
+(function renderLadder() {
+  document.getElementById("ladder").innerHTML = DATA.levels.map((l, i) =>
+    `<div class="rung" style="animation-delay:${.08 * i}s; margin-left:${i * 26}px">
+      <span class="ln mono">L${l.n}</span><span class="nm">${esc(l.name)}</span>
+      <span class="dt">${esc(l.detail)}</span><span class="ms mono">${esc(l.milestone)}</span></div>`).join("");
+})();
+(function renderPerf() {
+  document.getElementById("perfRows").innerHTML = DATA.targets.map(t =>
+    `<tr><td class="tier">${esc(t.tier)}</td><td><span class="metric">${esc(t.startup)}</span></td><td><span class="metric">${esc(t.memory)}</span></td><td><span class="metric">${esc(t.ui)}</span></td><td><span class="metric">${esc(t.cpu)}</span></td></tr>`).join("");
+  document.getElementById("benchList").innerHTML = DATA.benchmarks.map(b => `<span class="bench">${esc(b)}</span>`).join("");
+})();
+(function renderPipeline() {
+  const stages = [
+    ["Source", ".jsx · .tsx", "src", "Existing React app — unchanged source"],
+    ["Lexer", "tokens", "src", "JS tokens with positions, JSX-aware"],
+    ["Parser", "AST build", "src", "Expressions, functions, JSX"],
+    ["AST", "syntax tree", "src", "Minimal typed representation"],
+    ["JS IR", "JS semantics", "ir", "Closures, objects, async — runtime-independent"],
+    ["React IR", "components+hooks", "ir", "Elements, state slots, effects, keys"],
+    ["Runtime IR", "instructions", "ir", "Language-independent execution format"],
+    ["Optimizer", "specialize", "opt", "Static analysis → specialized native IR"]
+  ];
+  const g = document.getElementById("stages");
+  let out = "";
+  stages.forEach((s, i) => {
+    const x = 21 + i * 177;
+    out += `<g><title>${esc(s[3])}</title>
+      <rect class="pbox ${s[2]}" x="${x}" y="36" width="156" height="58" rx="12"/>
+      <text class="ptxt" x="${x + 78}" y="61">${esc(s[0])}</text>
+      <text class="psub" x="${x + 78}" y="79">${esc(s[1])}</text></g>`;
+  });
+  g.innerHTML = out;
+  const flows = document.querySelector("#view-pipeline .flows");
+  let f = "";
+  for (let i = 0; i < 7; i++) f += `<line class="flow" x1="${21 + i * 177 + 156}" y1="65" x2="${21 + (i + 1) * 177 - 2}" y2="65" marker-end="url(#arrow)"/>`;
+  flows.innerHTML = f;
+})();
+(function renderScale() {
+  let h = "";
+  for (let w = 0; w < DATA.horizonWeeks; w += 4) h += `<span>W${w + 1}</span>`;
+  document.getElementById("gscale").innerHTML = h;
+})();
+(function renderGantt() {
+  const rows = document.getElementById("grows");
+  const H = DATA.horizonWeeks;
+  let html = "";
+  DATA.phases.forEach((ph, i) => {
+    const left = (ph.startW - 1) / H * 100;
+    const width = (ph.endW - ph.startW + 1) / H * 100;
+    html += `<div class="grow">
+      <div class="glabel"><span class="mono" style="color:${ph.color}">${esc(ph.id)}</span> ${esc(ph.name)}<span class="wid">weeks ${ph.startW}–${ph.endW} · ${ph.tasks.length} tasks</span></div>
+      <div class="gtrack"><div class="gbar" style="--gc:${ph.color}; left:${left}%; width:${width}%; animation-delay:${i * .07}s">${esc(ph.id)}</div></div>
+    </div>`;
+  });
+  // today marker across the whole stack
+  const start = new Date(DATA.projectStart + "T00:00:00");
+  const weeks = Math.max(0, Math.min(H, (Date.now() - start.getTime()) / (7 * 86400000)));
+  const tLeft = (weeks / H * 100).toFixed(2);
+  html = `<div class="gtoday" style="left:calc(234px + (100% - 234px) * ${tLeft / 100})"></div>` + html;
+  rows.innerHTML = html;
+})();
+
+/* ---------- live renders ---------- */
+function renderPhases() {
+  const el = document.getElementById("phaseList");
+  el.innerHTML = DATA.phases.map((ph, pi) => {
+    const st = phaseStats(ph);
+    const status = st.done === st.total ? "done" : (ph.status === "spec" ? "spec" : "planned");
+    const label = status === "done" ? "COMPLETE" : (ph.status === "spec" ? "SPEC READY" : "PLANNED");
+    const tasks = ph.tasks.map((t, ti) => {
+      const id = tid(ph, ti); t.id = id;
+      const d = isDone(t);
+      return `<label class="task ${d ? "done" : ""}" data-id="${id}" data-tasktext="${esc(t.t.toLowerCase())}">
+        <input type="checkbox" ${d ? "checked" : ""} aria-label="${esc(t.t)}">
+        <span class="tbox"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-11"/></svg></span>
+        <span class="tt">${esc(t.t)}</span>
+        <span class="prio ${t.p}">${t.p}</span></label>`;
+    }).join("");
+    return `<article class="phase ${pi < 2 ? "open" : ""} ${st.done === st.total ? "complete" : ""}" data-phase="${ph.id}" style="--pc:${ph.color}">
+      <header class="phead" role="button" tabindex="0" aria-expanded="${pi < 2}">
+        <div class="pbadge">${esc(ph.id)}</div>
+        <div class="pinfo"><h3>${esc(ph.name)} <span class="bstatus ${status}">${label}</span></h3>
+          <div class="pblurb">${esc(ph.blurb)}</div></div>
+        <div class="pprog"><div class="row1"><span class="mono">${st.done}/${st.total}</span><span class="ppctv">${st.pct}%</span></div>
+          <div class="bar"><div class="fill" style="width:${st.pct}%"></div></div></div>
+        <div class="chev">▾</div>
+      </header>
+      <div class="pbody"><div class="pbody-in"><div class="tasks">${tasks}</div></div></div>
+    </article>`;
+  }).join("");
+
+  el.querySelectorAll(".phead").forEach(h => {
+    const toggle = () => {
+      const p = h.closest(".phase");
+      p.classList.toggle("open");
+      h.setAttribute("aria-expanded", p.classList.contains("open"));
+    };
+    h.addEventListener("click", toggle);
+    h.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+  });
+  el.querySelectorAll(".task input").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const id = cb.closest(".task").dataset.id;
+      const def = !!findTask(id).d;
+      overrides[id] = (cb.checked === def) ? undefined : cb.checked;
+      if (overrides[id] === undefined) delete overrides[id];
+      save(); renderAll();
+      const row = document.querySelector(`.task[data-id="${id}"]`);
+      if (row) { row.classList.add("flash"); setTimeout(() => row.classList.remove("flash"), 650); }
+    });
+  });
+  applyFilter();
+}
+function findTask(id) {
+  for (const ph of DATA.phases) for (const t of ph.tasks) if (t.id === id) return t;
+  return { d: false };
+}
+function renderMini() {
+  document.getElementById("miniphases").innerHTML = DATA.phases.map(ph => {
+    const st = phaseStats(ph);
+    return `<div class="miniphase"><span class="id mono" style="color:${ph.color}">${esc(ph.id)}</span>
+      <span class="nm">${esc(ph.name)}</span>
+      <div class="bar mpbar"><div class="fill" style="width:${st.pct}%"></div></div>
+      <span class="pct mono">${st.done}/${st.total}</span></div>`;
+  }).join("");
+}
+function renderNextUp() {
+  const rank = { P0: 0, P1: 1, P2: 2 };
+  const items = [];
+  DATA.phases.forEach(ph => ph.tasks.forEach((t, i) => { t.id = tid(ph, i); if (!isDone(t)) items.push({ ph, t }); }));
+  items.sort((a, b) => (a.ph.startW - b.ph.startW) || (rank[a.t.p] - rank[b.t.p]));
+  document.getElementById("nextup").innerHTML = items.slice(0, 6).map(x =>
+    `<div class="nu"><span class="pid mono">${esc(x.ph.id)}</span><span style="flex:1">${esc(x.t.t)}</span><span class="pp ${x.t.p}">${x.t.p}</span></div>`
+  ).join("") || `<div class="nu">🎉 Everything is done. Ship it.</div>`;
+}
+function renderStats() {
+  const o = overall();
+  document.getElementById("ringfill").style.strokeDashoffset = (RING_C * (1 - o.pct / 100)).toFixed(2);
+  document.getElementById("pctBig").textContent = o.pct + "%";
+  document.getElementById("ringSub").textContent = `${o.d} of ${o.n} tasks done`;
+  document.getElementById("topstrip").style.width = o.pct + "%";
+  document.getElementById("stTotal").textContent = o.n;
+  document.getElementById("stDone").textContent = o.d;
+  document.getElementById("stLeft").textContent = o.n - o.d;
+  let p0 = 0, phDone = 0;
+  DATA.phases.forEach(ph => {
+    const st = phaseStats(ph);
+    if (st.done === st.total) phDone++;
+    ph.tasks.forEach(t => { if (!isDone(t) && t.p === "P0") p0++; });
+  });
+  document.getElementById("stP0").textContent = p0;
+  document.getElementById("stPhases").innerHTML = phDone + '<span class="u">/' + DATA.phases.length + "</span>";
+  document.title = `R2N ${o.pct}% — Roadmap`;
+}
+function applyFilter() {
+  document.querySelectorAll("#phaseList .task").forEach(row => {
+    const done = row.classList.contains("done");
+    const okMode = filterMode === "all" || (filterMode === "done" ? done : !done);
+    const okQ = !query || row.dataset.tasktext.includes(query);
+    row.classList.toggle("hidden", !(okMode && okQ));
+  });
+  document.querySelectorAll("#phaseList .phase").forEach(p => {
+    const any = p.querySelectorAll(".task:not(.hidden)").length > 0;
+    p.classList.toggle("hidden", !any);
+  });
+}
+function renderAll() { renderStats(); renderMini(); renderNextUp(); refreshPhaseUI(); }
+function refreshPhaseUI() {
+  // update in place (keep open state & focus)
+  document.querySelectorAll("#phaseList .phase").forEach(p => {
+    const ph = DATA.phases.find(x => x.id === p.dataset.phase);
+    const st = phaseStats(ph);
+    p.querySelector(".pprog .row1 .mono").textContent = `${st.done}/${st.total}`;
+    p.querySelector(".ppctv").textContent = st.pct + "%";
+    p.querySelector(".bar .fill").style.width = st.pct + "%";
+    const badge = p.querySelector(".bstatus");
+    const complete = st.done === st.total;
+    p.classList.toggle("complete", complete);
+    badge.className = "bstatus " + (complete ? "done" : (ph.status === "spec" ? "spec" : "planned"));
+    badge.textContent = complete ? "COMPLETE" : (ph.status === "spec" ? "SPEC READY" : "PLANNED");
+  });
+  applyFilter();
+}
+
+/* ---------- controls ---------- */
+document.querySelectorAll(".controls .chip[data-mode]").forEach(c => {
+  c.addEventListener("click", () => {
+    document.querySelectorAll(".controls .chip[data-mode]").forEach(x => x.classList.toggle("active", x === c));
+    filterMode = c.dataset.mode; applyFilter();
+  });
+});
+document.getElementById("search").addEventListener("input", e => { query = e.target.value.trim().toLowerCase(); applyFilter(); });
+document.getElementById("expandAll").addEventListener("click", () => document.querySelectorAll("#phaseList .phase").forEach(p => { p.classList.add("open"); p.querySelector(".phead").setAttribute("aria-expanded", "true"); }));
+document.getElementById("collapseAll").addEventListener("click", () => document.querySelectorAll("#phaseList .phase").forEach(p => { p.classList.remove("open"); p.querySelector(".phead").setAttribute("aria-expanded", "false"); }));
+
+document.getElementById("exportBtn").addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify({ project: "R2N", version: 1, exported: new Date().toISOString(), overrides }, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "r2n-progress.json";
+  a.click(); URL.revokeObjectURL(a.href);
+});
+document.getElementById("importBtn").addEventListener("click", () => document.getElementById("importFile").click());
+document.getElementById("importFile").addEventListener("change", e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const j = JSON.parse(r.result);
+      if (j && typeof j === "object" && j.overrides && typeof j.overrides === "object") {
+        overrides = j.overrides; save(); renderPhases(); renderAll();
+      } else alert("Unrecognized file — expected an R2N progress export.");
+    } catch (err) { alert("Could not parse JSON: " + err.message); }
+  };
+  r.readAsText(f); e.target.value = "";
+});
+document.getElementById("resetBtn").addEventListener("click", () => {
+  if (confirm("Reset all progress to the shipped baseline? This cannot be undone (export first if unsure).")) {
+    overrides = {}; localStorage.removeItem(LS_KEY); renderPhases(); renderAll();
+  }
+});
+
+/* ---------- boot ---------- */
+renderPhases();
+renderAll();
+</script>
+</body>
+</html>

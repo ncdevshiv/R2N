@@ -1,0 +1,15 @@
+[package]
+name = "r2n-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Zero-JS R2N runtime: evaluation, hooks, reconciliation, patch stream"
+
+# Architecture rule (M0.1 guard): the runtime consumes ONLY the compiled
+# Runtime IR — it must never depend on the parser, AST, or compiler.
+[dependencies]
+r2n-ir = { path = "../r2n-ir" }
+
+[dev-dependencies]
+r2n-compiler = { path = "../r2n-compiler" }
+r2n-renderer-memory = { path = "../r2n-renderer-memory" }

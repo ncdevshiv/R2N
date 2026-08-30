@@ -1,0 +1,11 @@
+// Hello: demonstrates conditional rendering (if/else) and interpolation.
+component Hello() {
+    let name = "world";
+    return (
+        <div>
+            <h1>{"Hello, "}{name}{"!"}</h1>
+            <p>{if name == "world" { "matched" } else { "nope" }}</p>
+        </div>
+    );
+}
+export default Hello;

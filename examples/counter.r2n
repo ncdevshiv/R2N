@@ -1,0 +1,15 @@
+// Counter: useState + event handler + conditional render, end to end.
+// `r2n run examples/counter.r2n 3` clicks the button three times through the
+// real reactive loop: event → handler → setter → dirty → flush → patch.
+component Counter() {
+    let count = useState(0);
+    let n = count[0];
+    let setN = count[1];
+    return (
+        <div className="counter">
+            <h1>{n}</h1>
+            <button onClick={() => setN(n + 1)}>+1</button>
+        </div>
+    );
+}
+export default Counter;

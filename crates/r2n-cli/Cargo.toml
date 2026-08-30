@@ -1,0 +1,16 @@
+[package]
+name = "r2n-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "R2N command-line tool: compile, render, and dump artifacts"
+
+[[bin]]
+name = "r2n"
+path = "src/main.rs"
+
+[dependencies]
+r2n-compiler = { path = "../r2n-compiler" }
+r2n-ir = { path = "../r2n-ir" }
+r2n-runtime = { path = "../r2n-runtime" }
+r2n-renderer-memory = { path = "../r2n-renderer-memory" }

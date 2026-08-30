@@ -1,0 +1,30 @@
+# Cargo-deny policy: dependencies must be explainable.
+# cargo deny check licenses bans sources (see .github/workflows/supply-chain.yml)
+
+[licenses]
+# The workspace is MIT OR Apache-2.0; deps must be permissive.
+version = 2
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "ISC",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Zlib",
+  "CC0-1.0",
+]
+
+[bans]
+# Keep the dependency tree small and intentional — duplicates are review flags.
+multiple-versions = "deny"
+wildcards = "deny"
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

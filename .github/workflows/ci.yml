@@ -1,0 +1,73 @@
+# R2N CI — the auditable gate.
+# Every claim the project makes must survive this pipeline:
+#   fmt → build → clippy (-D warnings) → tests → audit-claims → dep-boundary
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: Verify (build, clippy, tests, audit)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Print toolchain
+        run: rustc --version && cargo --version
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Build (all targets)
+        run: cargo build --workspace --all-targets
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      # Independent re-derivation of every roadmap/README claim from source.
+      - name: Audit-claim verification
+        shell: bash
+        run: scripts/verify-audit-claims.sh
+
+      # The architecture guard also runs as a cargo test, but this static
+      # check catches manifest-only changes on machines where tests are
+      # filtered, and needs no build.
+      - name: Dependency boundary (runtime consumes IR only)
+        shell: bash
+        run: |
+          deps=$(sed -n '/^\[dependencies\]/,/^\[/p' crates/r2n-runtime/Cargo.toml | grep -oE 'r2n-(parser|ast|compiler)' || true)
+          if [ -n "$deps" ]; then
+            echo "ARCHITECTURE VIOLATION: r2n-runtime depends on: $deps" >&2
+            exit 1
+          fi
+          echo "boundary OK"
+
+      - name: CLI smoke test (build artifact JSON + run events)
+        shell: bash
+        run: |
+          cargo run --quiet -- build examples/counter.r2n | head -c 200
+          echo ""
+          cargo run --quiet -- run examples/counter.r2n 2 | tee /dev/stderr | grep -q "step 2:" || {
+            echo "CLI run mode did not produce step 2"; exit 1;
+          }
