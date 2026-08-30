@@ -185,7 +185,7 @@ phases:
       - id: "M0.2-T13"
         title: "All 14 M0.2 acceptance criteria green (mount/unmount, batching, identity stability…)"
         priority: "P0"
-        done: false
+        done: true
       - id: "M0.2-T14"
         title: "Todo app E2E through the full reactive loop"
         priority: "P1"
