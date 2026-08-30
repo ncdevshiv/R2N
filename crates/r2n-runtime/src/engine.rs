@@ -19,6 +19,7 @@
 use crate::eval::{eval, run_effect_body, Env, Host};
 use crate::hooks::{EffectBody, HookFrame};
 use crate::patch::{NodeId, Patch};
+use crate::scheduler::Scheduler;
 use crate::value::{RuntimeError, Value};
 use r2n_ir::react::ReactNode;
 use r2n_ir::runtime::RuntimeTemplate;
@@ -62,15 +63,18 @@ impl FrameStore {
         self.frames.entry(path.to_vec()).or_default()
     }
 
-    fn take_dirty_any(&mut self) -> bool {
-        // Use a temporary scan: take each frame's dirty flag.
-        let mut any = false;
-        for f in self.frames.values_mut() {
-            if f.take_dirty() {
-                any = true;
+    /// Queue every dirty frame's instance path on the scheduler (deduped),
+    /// clearing the per-frame dirty flags. Called after each render pass.
+    fn schedule_dirty(&mut self, scheduler: &mut Scheduler) {
+        let mut dirty_paths: Vec<Vec<String>> = Vec::new();
+        for (path, frame) in self.frames.iter_mut() {
+            if frame.take_dirty() {
+                dirty_paths.push(path.clone());
             }
         }
-        any
+        for path in dirty_paths {
+            scheduler.schedule(path);
+        }
     }
 }
 
@@ -90,6 +94,8 @@ pub struct Runtime {
     log: Vec<String>,
     /// Event handlers by node id, rebuilt on each flush: `node -> (event, handler)`.
     handlers: HashMap<NodeId, Vec<(String, Value)>>,
+    /// FIFO render scheduler with per-instance dedup (M0.2-T04).
+    scheduler: Scheduler,
 }
 
 struct LogHost<'a> {
@@ -113,6 +119,7 @@ impl Runtime {
             prev: None,
             log: Vec::new(),
             handlers: HashMap::new(),
+            scheduler: Scheduler::new(),
         }
     }
 
@@ -125,40 +132,57 @@ impl Runtime {
     }
 
     /// Render the root and return the patches that move the previous tree to
-    /// the new one. Re-renders while frames stay dirty (bounded to prevent
-    /// infinite update loops). After the loop the handler table reflects the
-    /// final tree, so `dispatch` can fire events against it.
+    /// the new one. Dirty frames (a setter ran) are enqueued on the FIFO
+    /// scheduler — deduped per instance — and each queue entry triggers one
+    /// re-render pass, drained in order. A bound prevents infinite update
+    /// loops. After the loop the handler table reflects the final tree, so
+    /// `dispatch` can fire events against it.
     pub fn flush(&mut self) -> Result<Vec<Patch>, RuntimeError> {
         let mut all = Vec::new();
+        // First pass: the initial (or post-dispatch) render.
+        self.render_once(&mut all)?;
+        // Then drain the FIFO scheduler: any frames that went dirty during a
+        // handler or a render are queued (deduped); each scheduled instance
+        // re-renders once, in FIFO order.
         let mut guard = 0;
-        loop {
+        while !self.scheduler.is_empty() {
             guard += 1;
             if guard > 1000 {
+                self.scheduler.clear();
                 return Err(RuntimeError::new("render loop exceeded 1000 iterations"));
             }
-            let mut host = LogHost { log: &mut self.log };
-            let mut scopes = std::mem::take(&mut self.scopes);
-            let tree = render_root(&self.template, &mut self.frames, &mut scopes, &mut host)?;
-            self.scopes = scopes;
-            // Handlers are re-derived from the fresh tree each pass; start clean
-            // so handlers on removed nodes disappear.
-            let mut handlers = std::mem::take(&mut self.handlers);
-            handlers.clear();
-            let patches = diff(
-                &mut self.id_map,
-                &mut self.id_counter,
-                self.prev.as_ref(),
-                &tree,
-                &mut handlers,
-            );
-            self.handlers = handlers;
-            all.extend(patches);
-            self.prev = Some(tree);
-            if !self.frames.take_dirty_any() {
-                break;
-            }
+            // Pop the next scheduled instance; the render below re-evaluates
+            // the whole tree top-down, which includes this instance.
+            let _ = self.scheduler.pop_front();
+            self.render_once(&mut all)?;
         }
         Ok(all)
+    }
+
+    /// One full render → diff → patch pass; queues any newly-dirty frames.
+    fn render_once(&mut self, all: &mut Vec<Patch>) -> Result<(), RuntimeError> {
+        let mut host = LogHost { log: &mut self.log };
+        let mut scopes = std::mem::take(&mut self.scopes);
+        let tree = render_root(&self.template, &mut self.frames, &mut scopes, &mut host)?;
+        self.scopes = scopes;
+        // Handlers are re-derived from the fresh tree each pass; start clean
+        // so handlers on removed nodes disappear.
+        let mut handlers = std::mem::take(&mut self.handlers);
+        handlers.clear();
+        let patches = diff(
+            &mut self.id_map,
+            &mut self.id_counter,
+            self.prev.as_ref(),
+            &tree,
+            &mut handlers,
+        );
+        self.handlers = handlers;
+        all.extend(patches);
+        self.prev = Some(tree);
+        // Frames that went dirty during this pass (setter calls in bindings,
+        // effects, or the handler) get scheduled — deduped, FIFO.
+        self.frames.schedule_dirty(&mut self.scheduler);
+        Ok(())
     }
 
     /// Fire `event` (e.g. `"click"`, `"change"`) on `node` by running the

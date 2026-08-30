@@ -14,6 +14,7 @@ pub mod eval;
 pub mod hooks;
 pub mod patch;
 pub mod render;
+pub mod scheduler;
 pub mod value;
 
 pub use engine::{RenderedNode, Runtime};
@@ -21,4 +22,5 @@ pub use eval::{Env, Host};
 pub use hooks::{EffectBody, HookFrame, Setter};
 pub use patch::{NodeId, Patch};
 pub use render::Renderer;
+pub use scheduler::Scheduler;
 pub use value::{RuntimeError, Value};

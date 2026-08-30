@@ -1,7 +1,7 @@
 # R2N — Complete Execution Checklist
 
 > **R2N — React to Native** — Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime
-> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **32/106** tasks done (30%).
+> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **33/106** tasks done (31%).
 > Audit basis: every task was verified against the actual implementation and test suite (30 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
 
 **How to use:** check items off in the interactive tracker ([index.html](index.html)) — it saves live in your browser. This file, [roadmap.yaml](roadmap.yaml), and [roadmap.toml](roadmap.toml) are the portable record; update them when a milestone closes.
@@ -32,14 +32,14 @@ _Rust workspace, IR data models, runtime skeleton, memory renderer, and the firs
 
 ## M0.2 — Reactive Runtime Loop
 
-`IN PROGRESS` · weeks 2–4 · progress **12/14** (86%)
+`IN PROGRESS` · weeks 2–4 · progress **13/14** (93%)
 
 _The core reactive loop: event → state mutation → dirty component → scheduler → render → reconcile → patch → renderer. State keyed by (ComponentId, StateSlot); deterministic FIFO scheduler; minimal-diff reconciler._
 
 - [x] **P0** — Reactive loop design locked: event → state → dirty → scheduler → render → diff → patch
 - [x] **P0** — RenderedNode rendered tree + prev-tree diffing (host/text/fragment nodes)
 - [x] **P0** — HookFrame StateStore: slots keyed by (instance path, slot index), persist across renders
-- [ ] **P0** — Scheduler: deterministic FIFO queue with dedup (no concurrency yet)
+- [x] **P0** — Scheduler: deterministic FIFO queue with dedup (`scheduler.rs`; batched-setter E2E: intermediate states never render)
 - [x] **P0** — EventSystem: handlers keyed by (NodeId, event); Runtime::dispatch runs handler then flushes
 - [x] **P0** — ComponentInstance: FrameStore keyed by instance path; two-instance independence tested
 - [x] **P0** — Patch enum: Create / CreateText / SetProp / SetText / Remove / Move
