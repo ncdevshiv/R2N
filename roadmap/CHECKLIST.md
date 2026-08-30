@@ -1,7 +1,7 @@
 # R2N — Complete Execution Checklist
 
 > **R2N — React to Native** — Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime
-> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **43/106** tasks done (41%).
+> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **44/106** tasks done (42%).
 > Audit basis: every task was verified against the actual implementation and test suite (54 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
 
 **How to use:** check items off in the interactive tracker ([index.html](index.html)) — it saves live in your browser. This file, [roadmap.yaml](roadmap.yaml), and [roadmap.toml](roadmap.toml) are the portable record; update them when a milestone closes.
@@ -69,7 +69,7 @@ _Stop hand-building IR. Lexer → parser → AST → JS IR → React IR, and the
 
 ## M1 — React Compatibility — Level 1
 
-`IN PROGRESS` · weeks 7–12 · progress **7/18** (39%)
+`IN PROGRESS` · weeks 7–12 · progress **8/18** (44%)
 
 _Behavioral compatibility with React core: full hook set, keys, context, effects, class components, error boundaries, portals, Suspense — validated by a behavioral conformance suite, not API presence._
 
@@ -80,7 +80,7 @@ _Behavioral compatibility with React core: full hook set, keys, context, effects
 - [x] **P0** — useReducer — reducer IR + dispatch actions: `HookSlot::Reducer` stores the reducer arrow as IR data (params + body, never a function pointer); `Value::Dispatcher { slot }` carries the frame slot; a dispatch call evaluates `reducer(state, action)` in a fresh env of its params and writes the frame (dirty → flush); multiple dispatches in one handler batch into a single render; per-instance independence; batch dedup test-verified (tests/use_reducer.rs, 6 tests)
 - [x] **P0** — useEffect — setup/cleanup/dependency-change lifecycle: parser gains `return expr;` in block-bodied arrows (cleanup spelling, mirrored in the recovery parser); `HookSlot::Effect` stores deps + the armed cleanup (body + captured env); deps change → old cleanup runs BEFORE the new setup (React order, log-verified); `begin_render`/`take_unmounted_cleanups` run armed cleanups ONCE at unmount (frame absent a pass) and disarm them; no-deps runs every render with prior cleanup first; empty-deps runs once; multi-effect order preserved (tests/use_effect.rs, 6 tests)
 - [x] **P1** — useLayoutEffect — synchronous pre-commit ordering: same lifecycle mechanics as useEffect (deps + cleanup) with phase separated on `EffectBody.layout` — layout drains inline during the render walk (before the diff), passive after the diff; cleanup carries its effect's phase (a layout cleanup precedes its layout setup in the same queue — caught a bug where it hardcoded passive); handler-captured effects drain post-flush (tests/use_layout_effect.rs, 5 tests)
-- [ ] **P1** — useMemo / useCallback with dependency-tracked caching
+- [x] **P1** — useMemo / useCallback with dependency-tracked caching: `HookSlot::Memo` (deps + cached value; recompute only when deps changed — deps recorded AT recompute, otherwise every render sees them as changed); `HookSlot::Callback` caches a `Value::Handler` carrying a per-registration identity number (React function identity: stable while deps unchanged, new when they change — observable via effect-dep arrays); pre-existing scheduler bug fixed (a frame dirty before a pass was re-scheduled AFTER it → redundant extra pass → no-deps effects/memos fired twice per change; dirty flags now cleared at pass start); useCallback works as an onClick target (tests/use_memo.rs, 6 tests)
 - [ ] **P0** — useRef — stable identity across renders
 - [ ] **P0** — useContext — Context / Provider / Consumer + value propagation
 - [ ] **P2** — useId
