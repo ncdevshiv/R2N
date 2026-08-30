@@ -149,7 +149,7 @@ phases:
       - id: "M0.2-T04"
         title: "Scheduler: deterministic FIFO queue with dedup (no concurrency yet)"
         priority: "P0"
-        done: false
+        done: true
       - id: "M0.2-T05"
         title: "EventSystem: register/dispatch keyed by (NodeId, EventType)"
         priority: "P0"

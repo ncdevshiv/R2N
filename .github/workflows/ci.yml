@@ -48,7 +48,7 @@ jobs:
       # Independent re-derivation of every roadmap/README claim from source.
       - name: Audit-claim verification
         shell: bash
-        run: scripts/verify-audit-claims.sh
+        run: bash scripts/verify-audit-claims.sh
 
       # The architecture guard also runs as a cargo test, but this static
       # check catches manifest-only changes on machines where tests are
@@ -68,6 +68,8 @@ jobs:
         run: |
           cargo run --quiet -- build examples/counter.r2n | head -c 200
           echo ""
-          cargo run --quiet -- run examples/counter.r2n 2 | tee /dev/stderr | grep -q "step 2:" || {
+          cargo run --quiet -- run examples/counter.r2n 2 > /tmp/r2n-run.out 2>&1
+          cat /tmp/r2n-run.out
+          grep -q "step 2:" /tmp/r2n-run.out || {
             echo "CLI run mode did not produce step 2"; exit 1;
           }
