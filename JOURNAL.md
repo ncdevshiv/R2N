@@ -433,3 +433,51 @@ Scoped keys + flat positions: one rule each, proven by 9 tests (no-host
 render, siblings, nested flattening, ternary branches, list-item
 interleaving + keyed survival, children-splice composition, self-closing,
 positional diffing). 89 green; records updated (M1 3/18, 39/106).
+
+## 2026-08-30 — Entry 9: M1-T04 Conditional Rendering & Lists
+
+**PLAN**
+First-class control flow: the idioms every React codebase uses. Ternaries
+and `.map` existed since M0.2/M0.3; the gaps were `&&`/`||` element
+short-circuits, nullish children semantics, index access in JSX, and
+filter chains.
+
+**WHAT**
+- `{cond && <el/>}` / `{cond || <el/>}` lower STRUCTURALLY (in lower_child)
+  to `If` with an empty-fragment "nothing" branch — the element side is the
+  renderable branch, the other side the condition. Value short-circuits
+  (`{flag && "text"}`) ride the existing Text path.
+- React children semantics in the Text arm: `true`/`false`/`null`/null
+  render NOTHING (empty fragment splices zero children); numbers (incl. 0)
+  and strings render — the classic `{count && <el/>}` renders `0` footgun
+  is parity, deliberately preserved.
+- `arr[i]` as a JSX child renders the indexed value (the parser emits
+  `.get(i)`; child-position calls that aren't `.map` were rejected — index
+  access now falls through to Text).
+- `arr.filter(pred)` evaluates (per-item protocol shared with `call_map`:
+  param 0 = element, param 1 = index) so `filter(...).map(...)` chains work.
+- Conditional UNMOUNT destroys hook state: FrameStore counts render passes;
+  HookFrame records its last-seen pass; begin_render resets slots when the
+  frame skipped a full pass (React: unmount = state gone; remount = fresh).
+  Continuous renders never reset.
+
+**WHY**
+These are the load-bearing render idioms — without `&&` and nullish
+suppression, every real app's conditional UI compiles to wrong output
+("false" rendered as text). The unmount-reset closes the semantic loop the
+conditional tests exposed: my first test asserted remount-fresh state and
+the engine returned the OLD value — the frame lived forever.
+
+**OPTIONS**
+- Reset on branch-flip only (then/else key change): rejected — the same
+  keyed component moving between slots must KEEP state (M1-T02 semantics);
+  pass-staleness is position-agnostic and matches React's tree-presence rule.
+- Clean up removed frames from the store: deferred — stale frames are
+  harmless post-reset (re-init on next use); leak-bounded by app size.
+
+**CHOSE**
+Structural short-circuit lowering + pass-staleness reset. 8 tests
+(tests/control_flow.rs): && element, || element, falsy-vs-0 semantics,
+value short-circuit, ternary chains, index child, filter().map() chain,
+conditional unmount/remount lifecycle. 97 green; records updated
+(M1 4/18, 40/106).
