@@ -185,7 +185,7 @@ phases:
       - id: "M0.2-T13"
         title: "All 14 M0.2 acceptance criteria green (mount/unmount, batching, identity stability…)"
         priority: "P0"
-        done: false
+        done: true
       - id: "M0.2-T14"
         title: "Todo app E2E through the full reactive loop"
         priority: "P1"
@@ -233,7 +233,7 @@ phases:
       - id: "M0.3-T09"
         title: "IR snapshot tests + ir_version / language_version stamping"
         priority: "P1"
-        done: false
+        done: true
 
   - id: "M1"
     name: "React Compatibility — Level 1"

@@ -73,7 +73,11 @@ pub fn lower(program: &Program) -> Result<RuntimeTemplate, LowerError> {
         }
     }
 
-    Ok(RuntimeTemplate { components, root })
+    Ok(RuntimeTemplate {
+        components,
+        root,
+        manifest: RuntimeTemplate::new().manifest,
+    })
 }
 
 /// A component body being lowered: an ordered list of render-time steps.

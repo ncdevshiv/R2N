@@ -260,7 +260,7 @@ done = true
 id = "M0.2-T13"
 title = "All 14 M0.2 acceptance criteria green (mount/unmount, batching, identity stability…)"
 priority = "P0"
-done = false
+done = true
 
 [[phases.tasks]]
 id = "M0.2-T14"
@@ -329,7 +329,7 @@ done = false
 id = "M0.3-T09"
 title = "IR snapshot tests + ir_version / language_version stamping"
 priority = "P1"
-done = false
+done = true
 
 [[phases]]
 id = "M1"

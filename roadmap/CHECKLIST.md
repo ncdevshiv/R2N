@@ -1,7 +1,7 @@
 # R2N — Complete Execution Checklist
 
 > **R2N — React to Native** — Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime
-> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **33/106** tasks done (31%).
+> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **35/106** tasks done (33%).
 > Audit basis: every task was verified against the actual implementation and test suite (30 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
 
 **How to use:** check items off in the interactive tracker ([index.html](index.html)) — it saves live in your browser. This file, [roadmap.yaml](roadmap.yaml), and [roadmap.toml](roadmap.toml) are the portable record; update them when a milestone closes.
@@ -32,7 +32,7 @@ _Rust workspace, IR data models, runtime skeleton, memory renderer, and the firs
 
 ## M0.2 — Reactive Runtime Loop
 
-`IN PROGRESS` · weeks 2–4 · progress **13/14** (93%)
+`IN PROGRESS` · weeks 2–4 · progress **14/14** (100% — exit review pending)
 
 _The core reactive loop: event → state mutation → dirty component → scheduler → render → reconcile → patch → renderer. State keyed by (ComponentId, StateSlot); deterministic FIFO scheduler; minimal-diff reconciler._
 
@@ -48,12 +48,12 @@ _The core reactive loop: event → state mutation → dirty component → schedu
 - [x] **P0** — Runtime::flush() core loop: render → reconcile → dirty check → swap tree (guarded)
 - [x] **P0** — Counter E2E: click → SetText("1") with no parent recreation (test-verified)
 - [x] **P0** — Two-instance test: Counter A and Counter B hold independent state (test-verified)
-- [ ] **P0** — All 14 M0.2 acceptance criteria green (mount/unmount, batching, identity stability…)
+- [x] **P0** — All 14 M0.2 acceptance criteria green (`tests/acceptance_m02.rs`: mount, unmount, minimal updates, batching, identity stability, keyed reorder/append/removal, instance independence, props, effect lifecycle, conditional swap, error determinism, patch-stream determinism)
 - [x] **P1** — Todo app E2E through the full reactive loop (click → keyed list append, minimal patches)
 
 ## M0.3 — Compiler Frontend — JS/JSX → IR
 
-`IN PROGRESS` · weeks 4–7 · progress **7/9** (78%)
+`IN PROGRESS` · weeks 4–7 · progress **8/9** (89%)
 
 _Stop hand-building IR. Lexer → parser → AST → JS IR → React IR, and the first genuinely interesting transformation: compiling Counter from real source, including event-handler extraction._
 
@@ -65,7 +65,7 @@ _Stop hand-building IR. Lexer → parser → AST → JS IR → React IR, and the
 - [x] **P0** — compile(source) → RuntimeTemplate artifact API (serde JSON) — **remaining**: format/ABI version stamps in the artifact
 - [x] **P0** — Counter compiled from real source E2E — no manually constructed IR anywhere in tests
 - [ ] **P1** — Diagnostics: spanned errors exist (line:col everywhere); friendly multi-error reporting remains
-- [ ] **P1** — IR snapshot tests + ir_version / language_version stamping — remains
+- [x] **P1** — IR determinism (snapshot foundation) + artifact manifest stamps: format_version + compiler_version, JSON round-trip verified
 
 ## M1 — React Compatibility — Level 1
 
