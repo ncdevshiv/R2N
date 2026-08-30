@@ -34,6 +34,11 @@ pub enum Value {
         inst_path: Vec<String>,
         /// The handler body (a `JsExpr::Closure`).
         body: Box<r2n_ir::js::JsExpr>,
+        /// Identity number. Plain `onX={() => ...}` handlers get 0; a
+        /// `useCallback` registration gets a fresh number so its identity
+        /// changes exactly when its deps change (React function identity),
+        /// even though the body stays structurally identical.
+        ident: u64,
     },
     /// A state setter handle produced by `useState`. Carries the hook-frame
     /// slot index (the frame-protocol callback channel). It is `Copy` and

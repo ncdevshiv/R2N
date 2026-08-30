@@ -24,6 +24,12 @@ pub struct HookFrame {
     /// A frame absent for a full pass was unmounted — remounting resets its
     /// state (React: unmount destroys component state).
     last_pass: Option<u64>,
+    /// The component instance path this frame belongs to (stamped by
+    /// `FrameStore::get`). Needed to build `Value::Handler` values
+    /// (useCallback) that must resolve the owning component's scope.
+    path: Option<Vec<String>>,
+    /// Monotonic source of useCallback identity numbers.
+    next_cb_ident: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +51,21 @@ enum HookSlot {
     Effect {
         deps: Option<Vec<Value>>,
         cleanup: Option<EffectBody>,
+    },
+    /// `useMemo`: the deps of the last computation and its cached value.
+    /// The compute runs only when the deps changed (or first render).
+    Memo {
+        deps: Option<Vec<Value>>,
+        value: Value,
+    },
+    /// `useCallback`: the deps of the last registration and the cached
+    /// function value (a `Value::Handler`). Identity is stable across
+    /// renders while deps are unchanged — so a callback in an effect-deps
+    /// array does not re-trigger its effect, and an `onClick={f}` prop
+    /// keeps the same handler.
+    Callback {
+        deps: Option<Vec<Value>>,
+        value: Value,
     },
 }
 
@@ -136,6 +157,23 @@ impl HookFrame {
         (state, Value::Dispatcher { slot: idx })
     }
 
+    /// The component instance path this frame belongs to (None for
+    /// throwaway frames, e.g. effect bodies).
+    pub fn path(&self) -> Option<&[String]> {
+        self.path.as_deref()
+    }
+
+    /// Stamp the frame with its instance path (FrameStore::get).
+    pub fn set_path(&mut self, path: Vec<String>) {
+        self.path = Some(path);
+    }
+
+    /// A fresh identity number for a useCallback registration.
+    pub fn next_callback_ident(&mut self) -> u64 {
+        self.next_cb_ident += 1;
+        self.next_cb_ident
+    }
+
     /// The pass this frame last rendered in (None = never).
     pub fn last_pass(&self) -> Option<u64> {
         self.last_pass
@@ -166,6 +204,82 @@ impl HookFrame {
             }) => Some((params.clone(), body.clone(), state.clone())),
             _ => None,
         }
+    }
+
+    /// `useMemo(deps)`: returns `Some(cached)` when the deps are unchanged
+    /// (reuse the cached value) or `None` when the caller must compute and
+    /// then `record_memo` it (first render or deps changed).
+    pub fn use_memo(&mut self, deps: Option<Vec<Value>>) -> Option<Value> {
+        let idx = self.next_index;
+        self.next_index += 1;
+        if idx >= self.slots.len() {
+            self.slots.push(HookSlot::Memo {
+                deps,
+                value: Value::Null,
+            });
+            return None;
+        }
+        let cached = match &self.slots[idx] {
+            HookSlot::Memo { deps: d, value } => {
+                if deps_eq(d, &deps) {
+                    Some(value.clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        match cached {
+            Some(v) => Some(v),
+            None => {
+                // Record the new deps NOW: the value is computed by the
+                // caller (record_memo fills it in), but the deps must be
+                // current or the next render would see them as changed
+                // again and recompute wrongly.
+                self.slots[idx] = HookSlot::Memo {
+                    deps,
+                    value: Value::Null,
+                };
+                None
+            }
+        }
+    }
+
+    /// Store the value the `useMemo` computation produced (the slot's deps
+    /// are already current — recorded at `use_memo`).
+    pub fn record_memo(&mut self, value: Value) {
+        if let Some(HookSlot::Memo { value: v, .. }) = self.slots.get_mut(self.next_index - 1) {
+            *v = value;
+        }
+    }
+
+    /// `useCallback(deps, value)`: returns the cached handler when deps are
+    /// unchanged (same identity — the cached `Value` literally), otherwise
+    /// stores and returns the new one. `value` is a `Value::Handler`.
+    pub fn use_callback(&mut self, deps: Option<Vec<Value>>, value: Value) -> Value {
+        let idx = self.next_index;
+        self.next_index += 1;
+        if idx >= self.slots.len() {
+            self.slots.push(HookSlot::Callback {
+                deps,
+                value: value.clone(),
+            });
+            return value;
+        }
+        if let HookSlot::Callback {
+            deps: d,
+            value: cached,
+        } = &self.slots[idx]
+        {
+            if deps_eq(d, &deps) {
+                return cached.clone();
+            }
+        }
+        self.slots[idx] = HookSlot::Callback {
+            deps,
+            value: value.clone(),
+        };
+        value
     }
 
     /// Write the state computed by a dispatch (marks the frame dirty).
@@ -254,6 +368,16 @@ impl HookFrame {
     /// Drain effects that should run after this commit.
     pub fn drain_effects(&mut self) -> Vec<Effect> {
         std::mem::take(&mut self.effects)
+    }
+}
+
+/// Deps equality: both `None` (no deps — React runs every render; here we
+/// treat `None` as "always recompute") or equal vectors. `Some([])` equals
+/// only `Some([])` (never recompute), while `None` never equals anything.
+fn deps_eq(a: &Option<Vec<Value>>, b: &Option<Vec<Value>>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
     }
 }
 

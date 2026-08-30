@@ -444,6 +444,55 @@ fn call_var(
             let (state, dispatcher) = frame.use_reducer(rparams, rbody, initial);
             Ok(Value::Array(vec![state, dispatcher]))
         }
+        "useMemo" => {
+            let deps = if args.len() >= 2 {
+                let d = eval(&args[1], env, frame, host, components, effects)?;
+                Some(deps_from_value(&d))
+            } else {
+                None
+            };
+            match frame.use_memo(deps) {
+                Some(cached) => Ok(cached),
+                None => {
+                    // Compute lazily: run the factory (an arrow's body) in
+                    // the CURRENT render env (it closes over the scope).
+                    let value = match &args[0] {
+                        JsExpr::Closure { body, .. } => {
+                            eval(body, env, frame, host, components, effects)?
+                        }
+                        _ => return Err(RuntimeError::new("useMemo expects a factory arrow")),
+                    };
+                    frame.record_memo(value.clone());
+                    Ok(value)
+                }
+            }
+        }
+        "useCallback" => {
+            let deps = if args.len() >= 2 {
+                let d = eval(&args[1], env, frame, host, components, effects)?;
+                Some(deps_from_value(&d))
+            } else {
+                None
+            };
+            // The cached identity is the ABI function value: a Handler
+            // (owning instance path + closure body). Its body executes via
+            // the event-dispatch path when used as an on* prop.
+            let inst_path = frame
+                .path()
+                .ok_or_else(|| RuntimeError::new("useCallback outside a component"))?
+                .to_vec();
+            let body = match &args[0] {
+                JsExpr::Closure { body, .. } => Box::new((**body).clone()),
+                _ => return Err(RuntimeError::new("useCallback expects an arrow")),
+            };
+            let ident = frame.next_callback_ident();
+            let value = Value::Handler {
+                inst_path,
+                body,
+                ident,
+            };
+            Ok(frame.use_callback(deps, value))
+        }
         "console" => Ok(Value::Null),
         "log" => {
             let parts: Result<Vec<String>, RuntimeError> = args

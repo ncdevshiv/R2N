@@ -78,7 +78,12 @@ pub struct FrameStore {
 
 impl FrameStore {
     fn get(&mut self, path: &[String]) -> &mut HookFrame {
-        self.frames.entry(path.to_vec()).or_default()
+        let f = self.frames.entry(path.to_vec()).or_default();
+        if f.path().is_none() {
+            let p = path.to_vec();
+            f.set_path(p);
+        }
+        f
     }
 
     /// Begin a new render pass; returns its number for `begin_render`.
@@ -103,6 +108,13 @@ impl FrameStore {
             }
         }
         out
+    }
+
+    /// Discard every frame's dirty flag (the render pass serves them).
+    fn clear_dirty(&mut self) {
+        for frame in self.frames.values_mut() {
+            frame.take_dirty();
+        }
     }
 
     /// Queue every dirty frame's instance path on the scheduler (deduped),
@@ -206,6 +218,10 @@ impl Runtime {
         let mut host = LogHost { log: &mut self.log };
         let mut scopes = std::mem::take(&mut self.scopes);
         self.frames.begin_pass();
+        // Pre-existing dirty flags are served by THIS top-down pass already:
+        // clear them so the scheduler does not run a redundant extra pass
+        // (a no-deps effect/memo would otherwise fire twice per change).
+        self.frames.clear_dirty();
         // Splices are rebuilt every pass: they ride the component-call props
         // (`Value::Children`), so a fresh render re-derives them naturally.
         let mut splices = SpliceMap::new();
@@ -263,7 +279,10 @@ impl Runtime {
             .and_then(|evs| evs.iter().find(|(n, _)| n == event))
             .cloned()
             .ok_or_else(|| RuntimeError::new(format!("no '{event}' handler on node {node}")))?;
-        let Value::Handler { inst_path, body } = handler else {
+        let Value::Handler {
+            inst_path, body, ..
+        } = handler
+        else {
             return Err(RuntimeError::new("handler value has wrong shape"));
         };
         // Run the handler closure against its owning component's hook frame
@@ -396,6 +415,7 @@ fn render_node(
                     Value::Handler {
                         inst_path: inst_path.to_vec(),
                         body: Box::new(expr.clone()),
+                        ident: 0,
                     }
                 } else {
                     v

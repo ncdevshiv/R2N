@@ -609,3 +609,48 @@ mixed phases).
 Single registration, phase-flagged bodies, two drain points (inline =
 layout, post-diff = passive). 5 tests; suite 114 green; clippy/fmt/audit
 clean; records updated (M1 7/18, 43/106).
+
+## 2026-08-30 — Entry 13: M1-T08 useMemo / useCallback
+
+**PLAN**
+Dependency-tracked caching: useMemo returns the same value while deps are
+unchanged; useCallback returns the same FUNCTION IDENTITY while deps are
+unchanged (React's real semantics — not just "same body").
+
+**WHAT**
+- `HookSlot::Memo { deps, value }`: use_memo returns the cached value when
+  deps are unchanged, else the caller computes and record_memo stores it.
+  BUG the tests caught: the deps were not written back on recompute, so
+  the NEXT render compared against STALE deps and recomputed again — memo
+  fired twice per change. The new deps are recorded at recompute time.
+- `HookSlot::Callback { deps, value }` caches a `Value::Handler`.
+  Identity: `Value::Handler` gains `ident` — plain onX closures use 0;
+  each useCallback registration gets a fresh frame counter number, so the
+  cached value is (path, body, ident): equal while deps are unchanged,
+  different when they change. This is the observable React identity
+  (effect-dep arrays containing a callback re-fire only on deps change;
+  `onClick={cb}` dispatches).
+- PRE-EXISTING SCHEDULER BUG (exposed by the no-deps memo test): a frame
+  dirty BEFORE a render pass was re-scheduled AFTER that pass, producing a
+  redundant extra render — no-deps effects/memos fired TWICE per change.
+  `render_once` now clears pre-existing dirty flags at pass start (the
+  top-down pass renders them anyway); the scheduler handles only frames
+  dirtied DURING a pass.
+
+**WHY**
+Memo/caching is one of React's core performance semantics; a memo that
+recomputes every render is a fake. The callback identity must be a real
+observable property — the structural (path, body) equality was not it
+(captures resolved at dispatch made two registrations equal).
+
+**OPTIONS**
+- Handler identity via env snapshot: rejected — the ABI handler is path +
+  body; an identity number is the honest, minimal observable.
+- Wait for real closure values (M2) and store them: rejected — callback
+  identity is a Level-1 semantic; the ident number preserves it within the
+  current value model.
+
+**CHOSE**
+Slot-stored memo with deps-writeback + ident-numbered callback identity.
+6 tests; suite 120 green; clippy/fmt/audit clean; records updated
+(M1 8/18, 44/106).
