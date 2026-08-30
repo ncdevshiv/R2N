@@ -51,6 +51,12 @@ pub enum Value {
     Dispatcher {
         slot: usize,
     },
+    /// A `useRef` handle: a mutable box whose `.current` reads/writes the
+    /// hook-frame slot. The value is identical across renders (same slot),
+    /// and writes persist without re-render — React ref semantics.
+    Ref {
+        slot: usize,
+    },
     /// The `children` prop: pre-lowered React-IR nodes passed through a
     /// component call. The nodes are pure data (they may reference the
     /// PARENT's scope; the runtime evaluates them against the parent's
@@ -93,6 +99,7 @@ impl Value {
             Value::Handler { .. } => true,
             Value::Setter(_) => true,
             Value::Dispatcher { .. } => true,
+            Value::Ref { .. } => true,
             Value::Children(_) => true,
         }
     }
@@ -123,6 +130,7 @@ impl Value {
             Value::Handler { .. } => "<handler>".to_string(),
             Value::Setter(s) => format!("<setter#{}>", s.frame_index),
             Value::Dispatcher { slot } => format!("<dispatch#{slot}>"),
+            Value::Ref { slot } => format!("<ref#{slot}>"),
             Value::Children(_) => "<children>".to_string(),
         }
     }

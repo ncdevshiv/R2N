@@ -236,6 +236,10 @@ fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, Low
                 .map(|s| lower_expr(s, index))
                 .collect::<Result<_, _>>()?,
         ),
+        Expr::Assign { target, value } => JsExpr::Assign {
+            target: Box::new(lower_expr(target, index)?),
+            value: Box::new(lower_expr(value, index)?),
+        },
         Expr::Element(_) => {
             return Err(LowerError::InvalidListMap(
                 "element used as a value".to_string(),
@@ -559,6 +563,10 @@ fn subst_expr(e: JsExpr, from: &str, to: &str) -> JsExpr {
         JsExpr::Block(stmts) => {
             JsExpr::Block(stmts.into_iter().map(|s| subst_expr(s, from, to)).collect())
         }
+        JsExpr::Assign { target, value } => JsExpr::Assign {
+            target: Box::new(subst_expr(*target, from, to)),
+            value: Box::new(subst_expr(*value, from, to)),
+        },
         JsExpr::If { cond, then, else_ } => JsExpr::If {
             cond: Box::new(subst_expr(*cond, from, to)),
             then: Box::new(subst_expr(*then, from, to)),
@@ -669,6 +677,10 @@ fn collect_free(e: &JsExpr, bound: &std::collections::HashSet<String>, out: &mut
             for s in stmts {
                 collect_free(s, bound, out);
             }
+        }
+        JsExpr::Assign { target, value } => {
+            collect_free(target, bound, out);
+            collect_free(value, bound, out);
         }
         JsExpr::If { cond, then, else_ } => {
             collect_free(cond, bound, out);

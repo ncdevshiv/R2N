@@ -277,7 +277,7 @@ phases:
       - id: "M1-T09"
         title: "useRef — stable identity across renders"
         priority: "P0"
-        done: false
+        done: true
       - id: "M1-T10"
         title: "useContext — Context / Provider / Consumer + value propagation"
         priority: "P0"

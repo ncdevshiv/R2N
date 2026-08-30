@@ -52,6 +52,11 @@ enum HookSlot {
         deps: Option<Vec<Value>>,
         cleanup: Option<EffectBody>,
     },
+    /// `useRef`: the current value held by the ref box (the slot index is
+    /// the identity across renders).
+    RefValue {
+        value: Value,
+    },
     /// `useMemo`: the deps of the last computation and its cached value.
     /// The compute runs only when the deps changed (or first render).
     Memo {
@@ -86,6 +91,9 @@ pub struct EffectBody {
     /// — before the diff produces the patch stream (pre-commit). Regular
     /// `useEffect` (false) drains after the diff (post-commit).
     pub layout: bool,
+    /// The owning component's instance path: hook handles (refs, setters)
+    /// referenced by the body live in ITS frame, not a throwaway one.
+    pub frame_path: Option<Vec<String>>,
 }
 
 impl HookFrame {
@@ -203,6 +211,34 @@ impl HookFrame {
                 state,
             }) => Some((params.clone(), body.clone(), state.clone())),
             _ => None,
+        }
+    }
+
+    /// `useRef(initial)`: returns a ref handle (same slot identity across
+    /// renders). `.current` writes persist without re-render.
+    pub fn use_ref(&mut self, initial: Value) -> Value {
+        let idx = self.next_index;
+        self.next_index += 1;
+        if idx >= self.slots.len() {
+            self.slots.push(HookSlot::RefValue {
+                value: initial.clone(),
+            });
+        }
+        Value::Ref { slot: idx }
+    }
+
+    /// Read a ref's `.current`.
+    pub fn read_ref(&self, slot: usize) -> Option<Value> {
+        match self.slots.get(slot) {
+            Some(HookSlot::RefValue { value }) => Some(value.clone()),
+            _ => None,
+        }
+    }
+
+    /// Write a ref's `.current`.
+    pub fn write_ref(&mut self, slot: usize, value: Value) {
+        if let Some(HookSlot::RefValue { value: v }) = self.slots.get_mut(slot) {
+            *v = value;
         }
     }
 

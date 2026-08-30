@@ -25,6 +25,9 @@ pub enum Expr {
     Unary { op: UnOp, expr: Box<Expr> },
     /// Function call: `callee(args...)`. Callee may be a component identifier.
     Call { callee: Box<Expr>, args: Vec<Expr> },
+    /// Assignment: `target = value` (target is an identifier or a member
+    /// access). Right-associative; used by `useRef`'s `.current` writes.
+    Assign { target: Box<Expr>, value: Box<Expr> },
     /// JSX element expression: `<Tag props>children</Tag>`.
     Element(Element),
     /// JSX/JS conditional expression: `cond ? then : else`.
@@ -66,6 +69,7 @@ impl fmt::Display for Expr {
             }
             Expr::Element(e) => write!(f, "<{}/{:?}>", e.tag, e.props.len()),
             Expr::Ternary { cond, then, else_ } => write!(f, "({cond} ? {then} : {else_})"),
+            Expr::Assign { target, value } => write!(f, "({target} = {value})"),
             Expr::Array(items) => {
                 write!(f, "[")?;
                 for (i, it) in items.iter().enumerate() {

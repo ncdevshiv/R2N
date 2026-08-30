@@ -53,6 +53,13 @@ pub enum JsExpr {
         then: Box<JsExpr>,
         else_: Box<JsExpr>,
     },
+    /// Assignment: `target = value` — target is a variable or a member
+    /// access (`ref.current`). Member writes go through the frame (refs);
+    /// variable writes update the current env scope.
+    Assign {
+        target: Box<JsExpr>,
+        value: Box<JsExpr>,
+    },
     /// Reference to a builtin by name (e.g. `"useState"`, `"items.map"` is a
     /// member call, not a builtin). Builtins are resolved by the runtime.
     Builtin(String),
