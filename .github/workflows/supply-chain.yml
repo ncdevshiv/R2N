@@ -34,4 +34,4 @@ jobs:
       - name: Install cargo-deny
         run: cargo install --locked cargo-deny || cargo install cargo-deny
       - name: Run license + ban checks
-        run: cargo deny --hide-inclusion-table check licenses bans sources
+        run: cargo deny check licenses bans sources
