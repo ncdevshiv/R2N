@@ -28,8 +28,19 @@ pub struct HookFrame {
 
 #[derive(Debug, Clone)]
 enum HookSlot {
-    State { value: Value },
-    Ref { value: Value },
+    State {
+        value: Value,
+    },
+    Ref {
+        value: Value,
+    },
+    /// `useReducer`: the reducer's params/body and the current state.
+    /// The dispatcher evaluates `reducer(state, action)` on each dispatch.
+    Reducer {
+        params: Vec<String>,
+        body: r2n_ir::js::JsExpr,
+        state: Value,
+    },
 }
 
 /// A `useEffect` registration made during a render.
@@ -84,6 +95,55 @@ impl HookFrame {
         if let Some(HookSlot::State { value }) = self.slots.get_mut(s.frame_index) {
             if *value != new_value {
                 *value = new_value;
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// `useReducer(reducer, initial)`: stores the reducer closure (params +
+    /// body — never a function pointer) and the current state. Returns
+    /// `(state, dispatch)`. The action is a plain value in this subset
+    /// (React action objects are M2 object-graph work); dispatch evaluates
+    /// `reducer(state, action)` in a fresh env bound only to its params.
+    pub fn use_reducer(
+        &mut self,
+        params: Vec<String>,
+        body: r2n_ir::js::JsExpr,
+        initial: Value,
+    ) -> (Value, Value) {
+        let idx = self.next_index;
+        self.next_index += 1;
+        if idx >= self.slots.len() {
+            self.slots.push(HookSlot::Reducer {
+                params,
+                body,
+                state: initial.clone(),
+            });
+        }
+        let state = match self.slots.get(idx) {
+            Some(HookSlot::Reducer { state, .. }) => state.clone(),
+            _ => initial,
+        };
+        (state, Value::Dispatcher { slot: idx })
+    }
+
+    /// Read the reducer and its current state for dispatch evaluation.
+    pub fn reducer_state(&self, idx: usize) -> Option<(Vec<String>, r2n_ir::js::JsExpr, Value)> {
+        match self.slots.get(idx) {
+            Some(HookSlot::Reducer {
+                params,
+                body,
+                state,
+            }) => Some((params.clone(), body.clone(), state.clone())),
+            _ => None,
+        }
+    }
+
+    /// Write the state computed by a dispatch (marks the frame dirty).
+    pub fn write_state(&mut self, idx: usize, new_value: Value) {
+        if let Some(HookSlot::Reducer { state, .. }) = self.slots.get_mut(idx) {
+            if *state != new_value {
+                *state = new_value;
                 self.dirty = true;
             }
         }

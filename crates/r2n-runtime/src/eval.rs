@@ -141,7 +141,15 @@ pub fn eval(
                 .map(|a| eval(a, env, frame, host, components, effects))
                 .collect();
             let arg_vals = arg_vals?;
-            call_value(&callee_val, &arg_vals, frame)
+            call_value(
+                &callee_val,
+                &arg_vals,
+                env,
+                frame,
+                host,
+                components,
+                effects,
+            )
         }
         JsExpr::Builtin(_) => Err(RuntimeError::new(
             "builtin references are not supported in the AOT-only subset",
@@ -313,12 +321,19 @@ fn eval_un(op: JsUnOp, v: &Value) -> Result<Value, RuntimeError> {
     }
 }
 
-/// Invoke a value as a function (handles `Setter` calls; handlers and closures
-/// are invoked through their dedicated paths, not here).
+/// Invoke a value as a function (handles `Setter` and `Dispatcher` calls;
+/// handlers are invoked only via event dispatch). The extra evaluator
+/// context is needed for reducers: `Dispatcher(slot)` evaluates the stored
+/// reducer body against a fresh env of its params.
+#[allow(clippy::too_many_arguments)]
 fn call_value(
     callee: &Value,
     args: &[Value],
+    _env: &mut Env,
     frame: &mut HookFrame,
+    host: &mut dyn Host,
+    components: &[RuntimeComponent],
+    effects: &mut Vec<EffectBody>,
 ) -> Result<Value, RuntimeError> {
     match callee {
         Value::Setter(s) => {
@@ -327,6 +342,25 @@ fn call_value(
                 .cloned()
                 .ok_or_else(|| RuntimeError::new("setter expects one argument"))?;
             frame.apply_setter(s, next);
+            Ok(Value::Null)
+        }
+        Value::Dispatcher { slot } => {
+            let action = args
+                .first()
+                .cloned()
+                .ok_or_else(|| RuntimeError::new("dispatch expects one argument"))?;
+            let (params, body, state) = frame
+                .reducer_state(*slot)
+                .ok_or_else(|| RuntimeError::new("dispatch: reducer slot not found"))?;
+            let mut denv = Env::new();
+            if let Some(p) = params.first() {
+                denv.define(p, state);
+            }
+            if let Some(p) = params.get(1) {
+                denv.define(p, action);
+            }
+            let new_state = eval(&body, &mut denv, frame, host, components, effects)?;
+            frame.write_state(*slot, new_state);
             Ok(Value::Null)
         }
         Value::Handler { .. } => Err(RuntimeError::new(
@@ -378,6 +412,22 @@ fn call_var(
             }
             Ok(Value::Null)
         }
+        "useReducer" => {
+            // The reducer is the FIRST arg's closure (params + body); it is
+            // stored as IR data (never a function pointer) and evaluated at
+            // dispatch time: `reducer(state, action)`.
+            let (rparams, rbody) = match args.first() {
+                Some(JsExpr::Closure { params, body, .. }) => (params.clone(), (**body).clone()),
+                _ => return Err(RuntimeError::new("useReducer expects a reducer arrow")),
+            };
+            let initial = if let Some(a) = args.get(1) {
+                eval(a, env, frame, host, components, effects)?
+            } else {
+                Value::Null
+            };
+            let (state, dispatcher) = frame.use_reducer(rparams, rbody, initial);
+            Ok(Value::Array(vec![state, dispatcher]))
+        }
         "console" => Ok(Value::Null),
         "log" => {
             let parts: Result<Vec<String>, RuntimeError> = args
@@ -393,7 +443,15 @@ fn call_var(
                 .iter()
                 .map(|a| eval(a, env, frame, host, components, effects))
                 .collect();
-            call_value(&callee_val, &arg_vals?, frame)
+            call_value(
+                &callee_val,
+                &arg_vals?,
+                env,
+                frame,
+                host,
+                components,
+                effects,
+            )
         }
     }
 }
