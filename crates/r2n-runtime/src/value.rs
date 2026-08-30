@@ -57,6 +57,15 @@ pub enum Value {
     Ref {
         slot: usize,
     },
+    /// A `createContext` handle: a runtime-unique id plus the default
+    /// value passed to `createContext` (the React contract — the default
+    /// lives on the handle, `useContext(Ctx)` needs no extra argument).
+    /// Providers push values for this id onto the render context stack;
+    /// `useContext` reads the nearest one, else the default.
+    Context {
+        id: u64,
+        default: Box<Value>,
+    },
     /// The `children` prop: pre-lowered React-IR nodes passed through a
     /// component call. The nodes are pure data (they may reference the
     /// PARENT's scope; the runtime evaluates them against the parent's
@@ -100,6 +109,7 @@ impl Value {
             Value::Setter(_) => true,
             Value::Dispatcher { .. } => true,
             Value::Ref { .. } => true,
+            Value::Context { .. } => true,
             Value::Children(_) => true,
         }
     }
@@ -131,6 +141,7 @@ impl Value {
             Value::Setter(s) => format!("<setter#{}>", s.frame_index),
             Value::Dispatcher { slot } => format!("<dispatch#{slot}>"),
             Value::Ref { slot } => format!("<ref#{slot}>"),
+            Value::Context { id, .. } => format!("<ctx#{id}>"),
             Value::Children(_) => "<children>".to_string(),
         }
     }

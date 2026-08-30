@@ -701,12 +701,24 @@ impl<'e, 'a> SpanParser<'e, 'a> {
 
     fn parse_element(&mut self) -> Result<Expr, ParseError> {
         self.expect(TokenKind::Lt)?;
-        let tag = self.expect_ident()?;
-        let is_component = tag
-            .chars()
-            .next()
-            .map(|c| c.is_ascii_uppercase())
-            .unwrap_or(false);
+        let is_fragment = self.check(&TokenKind::Gt);
+        let mut tag = if is_fragment {
+            String::new()
+        } else {
+            self.expect_ident()?
+        };
+        // Dotted member tags (mirrors parser.rs): `<Ctx.Provider>`.
+        if !is_fragment && self.check(&TokenKind::Dot) {
+            self.bump();
+            let member = self.expect_ident()?;
+            tag = format!("{tag}.{member}");
+        }
+        let is_component = !is_fragment
+            && tag
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_uppercase())
+                .unwrap_or(false);
         let mut props = Vec::new();
         loop {
             match &self.cur().kind {
@@ -796,7 +808,22 @@ impl<'e, 'a> SpanParser<'e, 'a> {
             }
         }
         self.expect(TokenKind::LtSlash)?;
-        let close = self.expect_ident()?;
+        if is_fragment {
+            // `</>` — fragment close has no tag (mirrors parser.rs).
+            self.expect(TokenKind::Gt)?;
+            return Ok(Expr::Element(Element {
+                tag,
+                is_component,
+                props,
+                children,
+            }));
+        }
+        let mut close = self.expect_ident()?;
+        if self.check(&TokenKind::Dot) {
+            self.bump();
+            let m = self.expect_ident()?;
+            close = format!("{close}.{m}");
+        }
         if close != tag {
             return Err(self.err(&format!(
                 "mismatched closing tag: expected `{tag}`, found `{close}`"

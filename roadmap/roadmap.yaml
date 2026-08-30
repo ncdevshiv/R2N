@@ -281,7 +281,7 @@ phases:
       - id: "M1-T10"
         title: "useContext — Context / Provider / Consumer + value propagation"
         priority: "P0"
-        done: false
+        done: true
       - id: "M1-T11"
         title: "useId"
         priority: "P2"
