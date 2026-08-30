@@ -193,7 +193,7 @@ phases:
 
   - id: "M0.3"
     name: "Compiler Frontend — JS/JSX → IR"
-    status: "in-progress"   # subset compiler real and verified; diagnostics breadth remains
+    status: "done"   # all 9 tasks incl. multi-error diagnostics with recovery
     window: { start_week: 4, end_week: 7 }
     color: "#f472b6"
     blurb: "Stop hand-building IR. Lexer → parser → AST → JS IR → React IR, and the first genuinely interesting transformation: compiling Counter from real source, including event-handler extraction."
@@ -229,7 +229,7 @@ phases:
       - id: "M0.3-T08"
         title: "Diagnostics: spanned errors with friendly messages"
         priority: "P1"
-        done: false
+        done: true
       - id: "M0.3-T09"
         title: "IR snapshot tests + ir_version / language_version stamping"
         priority: "P1"

@@ -6,7 +6,7 @@
 |---|---|
 | Version | 1.0 |
 | Updated | 2026-08-30 |
-| Status | M0.1–M0.2 done · M0.3 in progress (8/9) · 35/106 tasks |
+| Status | M0.1–M0.3 done · 36/106 tasks |
 | Horizon | 56 weeks, 10 milestones, 106 tracked tasks |
 | Interactive tracker | [index.html](index.html) |
 | Machine-readable | [roadmap.yaml](roadmap.yaml) · [roadmap.toml](roadmap.toml) |
@@ -97,7 +97,7 @@ Conformance suite end-state: `React Compatibility: 99.x% · JavaScript: 99.x% ·
 |---|---|---|---|---|
 | M0.1 | Foundation — Workspace & Vertical Slice | 1–2 | 13 | **DONE** (13/13) |
 | M0.2 | Reactive Runtime Loop | 2–4 | 14 | **DONE** (14/14) |
-| M0.3 | Compiler Frontend — JS/JSX → IR | 4–7 | 9 | in progress (8/9) |
+| M0.3 | Compiler Frontend — JS/JSX → IR | 4–7 | 9 | **DONE** (9/9) |
 | M1 | React Compatibility — Level 1 | 7–12 | 18 | planned |
 | M2 | JavaScript Compatibility — Level 2 | 12–20 | 15 | planned |
 | M3 | Optimization Pipeline — Specialization | 20–26 | 10 | planned |

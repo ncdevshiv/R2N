@@ -46,3 +46,24 @@ pub fn compile_source(src: &str) -> Result<RuntimeTemplate, CompileError> {
     let template = lower(&program)?;
     Ok(template)
 }
+
+/// Collect every diagnostic in the source in one pass (parse with recovery),
+/// then — if it parses — continue into lowering for its diagnostics too.
+/// Returns the rendered diagnostics, one String per error, ready to print.
+/// An Ok with a non-empty Vec means the source does not compile; the Vec is
+/// the complete list of reasons why.
+pub fn collect_diagnostics(src: &str) -> Result<Vec<String>, CompileError> {
+    let recovered = r2n_parser::parse_with_recovery(src)?;
+    let mut rendered = Vec::new();
+    for err in &recovered.errors {
+        rendered.push(format!("error: {}\n{}", err.message, err.render(src)));
+    }
+    if rendered.is_empty() {
+        // The parse is clean; surface lowering errors too (single error —
+        // lowering does not recover; that is M1+ work).
+        if let Err(e) = lower(&recovered.program) {
+            rendered.push(format!("lower error: {e}"));
+        }
+    }
+    Ok(rendered)
+}

@@ -271,7 +271,7 @@ done = true
 [[phases]]
 id = "M0.3"
 name = "Compiler Frontend — JS/JSX → IR"
-status = "in-progress"
+status = "done"
 start_week = 4
 end_week = 7
 color = "#f472b6"
@@ -323,7 +323,7 @@ done = true
 id = "M0.3-T08"
 title = "Diagnostics: spanned errors with friendly messages"
 priority = "P1"
-done = false
+done = true
 
 [[phases.tasks]]
 id = "M0.3-T09"

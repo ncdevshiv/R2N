@@ -51,6 +51,47 @@ pub enum TokenKind {
     Eof,
 }
 
+impl TokenKind {
+    /// Human-readable name for diagnostics: `` `;` `` rather than `Semicolon`.
+    pub fn describe(&self) -> String {
+        match self {
+            TokenKind::Int(i) => format!("number `{i}`"),
+            TokenKind::Float(f) => format!("number `{f}`"),
+            TokenKind::String(s) => format!("string \"{s}\""),
+            TokenKind::Ident(n) => format!("`{n}`"),
+            TokenKind::LeftParen => "`(`".into(),
+            TokenKind::RightParen => "`)`".into(),
+            TokenKind::LeftBrace => "`{`".into(),
+            TokenKind::RightBrace => "`}`".into(),
+            TokenKind::LeftBracket => "`[`".into(),
+            TokenKind::RightBracket => "`]`".into(),
+            TokenKind::Comma => "`,`".into(),
+            TokenKind::Dot => "`.`".into(),
+            TokenKind::Colon => "`:`".into(),
+            TokenKind::Semicolon => "`;`".into(),
+            TokenKind::Equals => "`=`".into(),
+            TokenKind::Arrow => "`=>`".into(),
+            TokenKind::Lt => "`<`".into(),
+            TokenKind::Gt => "`>`".into(),
+            TokenKind::Slash => "`/`".into(),
+            TokenKind::LtSlash => "`</`".into(),
+            TokenKind::Plus => "`+`".into(),
+            TokenKind::Minus => "`-`".into(),
+            TokenKind::Star => "`*`".into(),
+            TokenKind::Percent => "`%`".into(),
+            TokenKind::Bang => "`!`".into(),
+            TokenKind::EqEq => "`==`".into(),
+            TokenKind::BangEq => "`!=`".into(),
+            TokenKind::LtEq => "`<=`".into(),
+            TokenKind::GtEq => "`>=`".into(),
+            TokenKind::AmpAmp => "`&&`".into(),
+            TokenKind::PipePipe => "`||`".into(),
+            TokenKind::Question => "`?`".into(),
+            TokenKind::Eof => "end of file".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
@@ -72,6 +113,12 @@ pub struct Lexer<'a> {
     /// Byte offset where the token currently being lexed started (set by
     /// `next_token` before any characters are consumed).
     token_start: usize,
+    /// Line and 1-based column of the current token's FIRST character,
+    /// recorded by `next_token` before any characters are consumed. `col`
+    /// alone cannot express this: by the time `tok()` runs, multi-character
+    /// tokens have already advanced it past the token.
+    token_line: usize,
+    token_col: usize,
 }
 
 impl<'a> Copy for Lexer<'a> {}
@@ -90,6 +137,8 @@ impl<'a> Lexer<'a> {
             src,
             offset: 0,
             token_start: 0,
+            token_line: 1,
+            token_col: 1,
         };
         l.skip_trivia()?;
         Ok(l)
@@ -142,8 +191,8 @@ impl<'a> Lexer<'a> {
     fn tok(&self, kind: TokenKind) -> Token {
         Token {
             kind,
-            line: self.line,
-            column: self.col,
+            line: self.token_line,
+            column: self.token_col,
             offset: self.token_start,
         }
     }
@@ -228,6 +277,10 @@ impl<'a> Lexer<'a> {
     pub fn next_token(&mut self) -> Result<Token, ParseError> {
         self.skip_trivia()?;
         self.token_start = self.offset;
+        self.token_line = self.line;
+        // `col` is 0-based until the first char of a line is consumed;
+        // token columns are 1-based like editor positions.
+        self.token_col = self.col + 1;
         let c = match self.rest.chars().next() {
             None => return Ok(self.tok(TokenKind::Eof)),
             Some(c) => c,
