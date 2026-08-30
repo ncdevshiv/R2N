@@ -693,3 +693,50 @@ contract, all tested.
 **CHOSE**
 Real assignment + frame-slot box. Suite 123; records updated
 (M1 9/18, 45/106).
+
+## 2026-08-30 — Entry 15: M1-T10 useContext
+
+**PLAN**
+React's context: `createContext(default)` handle, `<Ctx.Provider value={v}>`
+JSX, `useContext(Ctx)` reads the nearest provider value (else default), and
+value changes propagate. Parser had no dotted JSX tags; child-position
+calls were `.map`-only; returns were validated against a too-narrow set.
+
+**WHAT**
+- Dotted JSX tags: `<Ctx.Provider>...</Ctx.Provider>` — parser (open AND
+  close) + recovery twin. The close-tag path previously dropped the
+  `.Provider` member, causing a mismatch error — the tests caught it.
+- `createContext(default)` → `Value::Context { id, default }`: the default
+  lives ON the handle (React's contract — `useContext(Ctx)` takes no
+  default argument). My first cut put the default at useContext's second
+  arg; tests caught the divergence.
+- `ReactNode::ContextProvider { ctx, value, children }`; runtime arm
+  evaluates both in the current scope, pushes (id, value) onto the shared
+  per-pass stack, renders children, pops.
+- The stack is SHARED: `Env::ctx` (Rc<RefCell<Vec<(id, value)>>>); child
+  envs are created via `Env::child_of(parent)` so providers propagate into
+  descendant components — without this, a fresh `Env::new()` per child
+  isolated the stack and nothing ever reached a consumer.
+- BROADENED CORRECTNESS: child-position calls now render as text (any
+  value call, not just `.map`/`.get` — `{useContext(Ctx)}` previously
+  errored as "invalid list .map()"); the return-validation gate accepts
+  Fragment and ContextProvider renderables (fragments as a root return
+  would have failed for the same reason).
+
+**WHY**
+Context is the Level-1 plumbing app architecture depends on (theming,
+routing, i18n). Each of the three failures along the way (close-tag member,
+default location, stack isolation) was a real semantic divergence that the
+acceptance tests pinned down — worth recording because each maps to a
+cheaper fix than the wrong design would have been.
+
+**OPTIONS**
+- Context as a static (module-level) symbol: rejected — the subset has no
+  module scope yet; per-render handle values are honest and work.
+- Thread the stack through eval's signature: rejected — Env already
+  carries per-pass state (scopes); the Rc keeps the stack single-per-pass
+  without widening 30 call sites.
+
+**CHOSE**
+Handle with default + shared Env stack. 6 tests; suite 129; records
+updated (M1 10/18, 46/106).

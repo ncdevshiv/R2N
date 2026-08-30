@@ -643,11 +643,18 @@ impl<'a> Parser<'a> {
         // Fragment shorthand `<>...</>`: no tag. Modeled as an Element with an
         // empty tag (the lowering turns it into a React Fragment node).
         let is_fragment = self.check(&TokenKind::Gt);
-        let tag = if is_fragment {
+        let mut tag = if is_fragment {
             String::new()
         } else {
             self.expect_ident()?
         };
+        // Dotted member tags: `<Ctx.Provider>`, `<Ctx.Consumer>` — the
+        // context API's JSX form.
+        if !is_fragment && self.check(&TokenKind::Dot) {
+            self.advance()?;
+            let member = self.expect_ident()?;
+            tag = format!("{tag}.{member}");
+        }
         let is_component = !is_fragment && Self::is_component_name(&tag);
         let mut props = Vec::new();
         // attributes until "/>" or ">"
@@ -735,7 +742,12 @@ impl<'a> Parser<'a> {
             // `</>` — the fragment close has no tag name.
             self.expect(TokenKind::Gt)?;
         } else {
-            let close = self.expect_ident()?;
+            let mut close = self.expect_ident()?;
+            if self.check(&TokenKind::Dot) {
+                self.advance()?;
+                let m = self.expect_ident()?;
+                close = format!("{close}.{m}");
+            }
             if close != tag {
                 return Err(self.err(&format!(
                     "mismatched closing tag: expected {tag}, found {close}"

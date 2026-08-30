@@ -14,11 +14,17 @@ use crate::value::{RuntimeError, Value};
 use r2n_ir::js::{JsBinOp, JsExpr, JsUnOp};
 use r2n_ir::runtime::RuntimeComponent;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The evaluation environment: a chain of named binding frames.
 #[derive(Debug, Clone, Default)]
 pub struct Env {
     frames: Vec<BTreeMap<String, Value>>,
+    /// Shared render-pass context stack: providers push, useContext reads
+    /// the nearest value for a context id. Cloned envs share the stack
+    /// (Rc<RefCell>) because context is scoped by TREE POSITION, not by
+    /// component env; a fresh stack is created per render pass.
+    ctx: std::rc::Rc<std::cell::RefCell<Vec<(u64, Value)>>>,
 }
 
 impl Env {
@@ -27,6 +33,21 @@ impl Env {
         // write. `push_scope`/`pop_scope` add/remove nested scopes.
         Self {
             frames: vec![BTreeMap::new()],
+            ctx: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        }
+    }
+
+    /// The context stack (shared across env clones of this pass).
+    pub fn ctx(&self) -> std::rc::Rc<std::cell::RefCell<Vec<(u64, Value)>>> {
+        self.ctx.clone()
+    }
+
+    /// A fresh env whose context stack is the SHARED stack of `parent` —
+    /// children of a provider must see the provider's values.
+    pub fn child_of(parent: &Env) -> Self {
+        Self {
+            frames: vec![BTreeMap::new()],
+            ctx: parent.ctx.clone(),
         }
     }
     pub fn push_scope(&mut self) {
@@ -480,6 +501,41 @@ fn call_var(
             };
             let (state, dispatcher) = frame.use_reducer(rparams, rbody, initial);
             Ok(Value::Array(vec![state, dispatcher]))
+        }
+        "createContext" => {
+            // A context handle: unique id + the default value (React:
+            // createContext(defaultValue)).
+            static NEXT: AtomicU64 = AtomicU64::new(1);
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            let default = match args.first() {
+                Some(a) => eval(a, env, frame, host, components, effects)?,
+                None => Value::Null,
+            };
+            Ok(Value::Context {
+                id,
+                default: Box::new(default),
+            })
+        }
+        "useContext" => {
+            let ctx_val = match args.first() {
+                Some(a) => eval(a, env, frame, host, components, effects)?,
+                None => return Err(RuntimeError::new("useContext expects a context")),
+            };
+            let Value::Context { id, default } = ctx_val else {
+                return Err(RuntimeError::new(
+                    "useContext expects a createContext value",
+                ));
+            };
+            // Nearest provider value on the render-pass stack, else the
+            // handle's default.
+            let stack = env.ctx();
+            let found = stack
+                .borrow()
+                .iter()
+                .rev()
+                .find(|(cid, _)| *cid == id)
+                .map(|(_, v)| v.clone());
+            Ok(found.unwrap_or(*default))
         }
         "useRef" => {
             let initial = if let Some(a) = args.first() {

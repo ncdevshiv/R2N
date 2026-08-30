@@ -587,7 +587,7 @@ fn render_node(
                 if !unmount_cleanups.is_empty() {
                     run_effects(&unmount_cleanups, frames, host, &template.components)?;
                 }
-                let mut cenv = Env::new();
+                let mut cenv = Env::child_of(env);
                 for (p, v) in comp
                     .params
                     .iter()
@@ -765,6 +765,54 @@ fn render_node(
                 props: Vec::new(),
                 children: out,
                 key: "frag".to_string(),
+            }
+        }
+        ReactNode::ContextProvider {
+            ctx,
+            value,
+            children,
+        } => {
+            // Evaluate the handle and the value in THIS component's scope,
+            // push onto the stack, render the children, pop (React: the
+            // provider value is visible to everything below it in the tree).
+            let ctx_val = {
+                let frame = frames.get(inst_path);
+                eval(ctx, env, frame, host, &template.components, effects)?
+            };
+            let Value::Context { id, .. } = ctx_val else {
+                return Err(RuntimeError::new(
+                    "provider's context is not a createContext value",
+                ));
+            };
+            let val = {
+                let frame = frames.get(inst_path);
+                eval(value, env, frame, host, &template.components, effects)?
+            };
+            env.ctx().borrow_mut().push((id, val));
+            let mut out = Vec::with_capacity(children.len());
+            for (i, c) in children.iter().enumerate() {
+                let child_node = child_path(node_path, i, &format!("#{i}"));
+                let mut rc = render_node(
+                    c,
+                    inst_path,
+                    &child_node,
+                    env,
+                    frames,
+                    scopes,
+                    splices,
+                    template,
+                    host,
+                    effects,
+                )?;
+                set_key(&mut rc, &format!("#{i}"));
+                out.push(rc);
+            }
+            let _ = env.ctx().borrow_mut().pop();
+            RenderedNode::Host {
+                tag: FRAGMENT.to_string(),
+                props: Vec::new(),
+                children: out,
+                key: "provider".to_string(),
             }
         }
         ReactNode::Children => {

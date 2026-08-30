@@ -128,6 +128,8 @@ fn lower_component(
             | ReactNode::Component { .. }
             | ReactNode::If { .. }
             | ReactNode::List { .. }
+            | ReactNode::Fragment { .. }
+            | ReactNode::ContextProvider { .. }
     ) {
         return Err(LowerError::NonRenderableReturn(format!(
             "component {} returns a non-renderable expression",
@@ -317,6 +319,33 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
         return Ok(ReactNode::Fragment { key, children });
     }
 
+    // Context provider: `<Ctx.Provider value={...}>` — the dotted tag names
+    // the context handle's Provider member, not a component table entry.
+    if let Some((base, member)) = e.tag.rsplit_once('.') {
+        if member == "Provider" && !base.is_empty() {
+            let ctx = JsExpr::Var(base.to_string());
+            let mut value = JsExpr::Lit(r2n_ast::lit::Literal::Null);
+            for p in &e.props {
+                if p.name == "value" {
+                    value = match &p.value {
+                        Some(v) => lower_expr(v, index)?,
+                        None => JsExpr::Lit(r2n_ast::lit::Literal::Bool(true)),
+                    };
+                }
+            }
+            let children = e
+                .children
+                .iter()
+                .map(|c| lower_child(c, index))
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(ReactNode::ContextProvider {
+                ctx,
+                value,
+                children,
+            });
+        }
+    }
+
     // Component element? (uppercase tag)
     if e.is_component {
         let comp_idx = *index
@@ -377,16 +406,14 @@ fn lower_child(child: &Expr, index: &HashMap<String, usize>) -> Result<ReactNode
             name,
             is_component: false,
         } if name == "children" => Ok(ReactNode::Children),
-        Expr::Call { callee, .. } => {
+        Expr::Call { .. } => {
             // possible `items.map(x => <li/>)` directly as a child
             if let Some(list) = try_lower_list(child, index)? {
                 Ok(list)
-            } else if is_index_call(callee) {
-                // `arr[i]` (the parser emits `.get(i)`): renders the indexed
-                // value as text — not a list map.
-                Ok(ReactNode::Text(lower_expr(child, index)?))
             } else {
-                Err(LowerError::InvalidListMap(format!("{callee:?} as child")))
+                // Any other call (`useContext(Ctx)`, `arr[i]`, ...) is a
+                // VALUE rendered as text — the call evaluates at render.
+                Ok(ReactNode::Text(lower_expr(child, index)?))
             }
         }
         // `{cond && <el/>}` / `{cond || <el/>}`: short-circuit rendering.
@@ -394,13 +421,6 @@ fn lower_child(child: &Expr, index: &HashMap<String, usize>) -> Result<ReactNode
         // A `{expr}` child renders as text.
         other => Ok(ReactNode::Text(lower_expr(other, index)?)),
     }
-}
-
-/// Is this callee an index access `base[key]` (the parser emits it as
-/// `base.get(key)`)? Index access in child position renders the value,
-/// whereas other method calls are not renderable.
-fn is_index_call(callee: &Expr) -> bool {
-    matches!(callee, Expr::Member { prop, .. } if prop == "get")
 }
 
 /// Does this expression structurally render a node on one side of a
@@ -618,6 +638,18 @@ fn subst_node(n: ReactNode, from: &str, to: &str) -> ReactNode {
             key_expr: subst_expr(key_expr, from, to),
             item: Box::new(subst_node(*item, from, to)),
         },
+        ReactNode::ContextProvider {
+            ctx,
+            value,
+            children,
+        } => ReactNode::ContextProvider {
+            ctx: subst_expr(ctx, from, to),
+            value: subst_expr(value, from, to),
+            children: children
+                .into_iter()
+                .map(|c| subst_node(c, from, to))
+                .collect(),
+        },
         ReactNode::Text(e) => ReactNode::Text(subst_expr(e, from, to)),
         ReactNode::Children => ReactNode::Children,
         ReactNode::Fragment { key, children } => ReactNode::Fragment {
@@ -725,6 +757,17 @@ fn collect_free_node(
             collect_free(items, bound, out);
             collect_free(key_expr, bound, out);
             collect_free_node(item, bound, out);
+        }
+        ReactNode::ContextProvider {
+            ctx,
+            value,
+            children,
+        } => {
+            collect_free(ctx, bound, out);
+            collect_free(value, bound, out);
+            for c in children {
+                collect_free_node(c, bound, out);
+            }
         }
         ReactNode::Text(e) => collect_free(e, bound, out),
         // The children splice point is a runtime concern; `children` itself

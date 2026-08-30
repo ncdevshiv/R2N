@@ -43,6 +43,14 @@ pub enum ReactNode {
         key_expr: JsExpr,
         item: Box<ReactNode>,
     },
+    /// A context provider: `<Ctx.Provider value={v}>` — `ctx` is the
+    /// runtime value of the context handle, `value` is evaluated at render
+    /// time and becomes the nearest value for the subtree.
+    ContextProvider {
+        ctx: JsExpr,
+        value: JsExpr,
+        children: Vec<ReactNode>,
+    },
     /// The splice point for a parent's `children` prop inside a child
     /// component's body (`React children composition`). Lowered from the
     /// `children` identifier wherever it appears in render position. At
