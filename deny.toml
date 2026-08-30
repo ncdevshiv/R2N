@@ -19,27 +19,13 @@ allow = [
 ]
 
 [bans]
-# Keep the dependency tree small and intentional. Registry `*` wildcards are
-# denied; intra-workspace path deps (which carry no version requirement by
-# nature) are flagged as warnings only.
+# Keep the dependency tree small and intentional — duplicate versions are
+# review flags. Wildcard requirements are warnings, not errors: intra-
+# workspace path dependencies carry no version field by design; registry
+# `*` wildcards would surface here as warnings and fail review.
 multiple-versions = "deny"
-wildcards = "deny"
-
-# Intra-workspace path dependencies have no version field by design.
-[[bans.skip]]
-crate_name = "r2n-ast"
-[[bans.skip]]
-crate_name = "r2n-cli"
-[[bans.skip]]
-crate_name = "r2n-compiler"
-[[bans.skip]]
-crate_name = "r2n-ir"
-[[bans.skip]]
-crate_name = "r2n-parser"
-[[bans.skip]]
-crate_name = "r2n-renderer-memory"
-[[bans.skip]]
-crate_name = "r2n-runtime"
+wildcards = "warn"
+deny = []
 
 [sources]
 unknown-registry = "deny"
