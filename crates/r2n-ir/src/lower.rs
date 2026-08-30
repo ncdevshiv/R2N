@@ -272,6 +272,12 @@ fn lower_renderable(expr: &Expr, index: &HashMap<String, usize>) -> Result<React
             then: Box::new(lower_renderable(then, index)?),
             else_: Box::new(lower_renderable(else_, index)?),
         }),
+        // The `children` prop in render position: splice point for the
+        // parent's passed-in children (React children composition).
+        Expr::Ident {
+            name,
+            is_component: false,
+        } if name == "children" => Ok(ReactNode::Children),
         // A bare `{expr}` as the sole child renders as text.
         other => Ok(ReactNode::Text(lower_expr(other, index)?)),
     }
@@ -283,7 +289,18 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
         let comp_idx = *index
             .get(&e.tag)
             .ok_or_else(|| LowerError::UnknownComponent(e.tag.clone()))?;
-        let props = lower_props(&e.props, index)?;
+        let mut props = lower_props(&e.props, index)?;
+        // React children composition: JSX children of a component element
+        // become its `children` prop. They are lowered NOW, in the parent's
+        // context, and carried as pre-built React-IR nodes (a `Value::Children`
+        // at runtime) — the child splices them via `ReactNode::Children`.
+        if !e.children.is_empty() {
+            let mut children = Vec::with_capacity(e.children.len());
+            for child in &e.children {
+                children.push(lower_child(child, index)?);
+            }
+            props.push(("children".to_string(), JsExpr::Children(children)));
+        }
         return Ok(ReactNode::Component {
             component: ComponentRef(comp_idx),
             props,
@@ -322,6 +339,11 @@ fn lower_child(child: &Expr, index: &HashMap<String, usize>) -> Result<ReactNode
     match child {
         Expr::Element(_) => lower_renderable(child, index),
         Expr::Ternary { .. } => lower_renderable(child, index),
+        // `children` as a host element's child: the splice point.
+        Expr::Ident {
+            name,
+            is_component: false,
+        } if name == "children" => Ok(ReactNode::Children),
         Expr::Call { callee, .. } => {
             // possible `items.map(x => <li/>)` directly as a child
             if let Some(list) = try_lower_list(child, index)? {
@@ -435,6 +457,9 @@ fn subst_expr(e: JsExpr, from: &str, to: &str) -> JsExpr {
             else_: Box::new(subst_expr(*else_, from, to)),
         },
         JsExpr::Builtin(b) => JsExpr::Builtin(b),
+        JsExpr::Children(nodes) => {
+            JsExpr::Children(nodes.into_iter().map(|n| subst_node(n, from, to)).collect())
+        }
     }
 }
 
@@ -478,6 +503,7 @@ fn subst_node(n: ReactNode, from: &str, to: &str) -> ReactNode {
             item: Box::new(subst_node(*item, from, to)),
         },
         ReactNode::Text(e) => ReactNode::Text(subst_expr(e, from, to)),
+        ReactNode::Children => ReactNode::Children,
     }
 }
 
@@ -491,6 +517,11 @@ fn collect_free(e: &JsExpr, bound: &std::collections::HashSet<String>, out: &mut
             }
         }
         JsExpr::Lit(_) | JsExpr::Builtin(_) => {}
+        JsExpr::Children(nodes) => {
+            for n in nodes {
+                collect_free_node(n, bound, out);
+            }
+        }
         JsExpr::Get { base, .. } => collect_free(base, bound, out),
         JsExpr::Index { base, key } => {
             collect_free(base, bound, out);
@@ -569,6 +600,9 @@ fn collect_free_node(
             collect_free_node(item, bound, out);
         }
         ReactNode::Text(e) => collect_free(e, bound, out),
+        // The children splice point is a runtime concern; `children` itself
+        // is a param/prop the component received (already counted if bound).
+        ReactNode::Children => {}
     }
 }
 

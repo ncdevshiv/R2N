@@ -334,7 +334,7 @@ done = true
 [[phases]]
 id = "M1"
 name = "React Compatibility — Level 1"
-status = "planned"
+status = "in-progress"
 start_week = 7
 end_week = 12
 color = "#34d399"
@@ -344,7 +344,7 @@ blurb = "Behavioral compatibility with React core: full hook set, keys, context,
 id = "M1-T01"
 title = "Props & children propagation through component calls"
 priority = "P0"
-done = false
+done = true
 
 [[phases.tasks]]
 id = "M1-T02"

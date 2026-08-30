@@ -237,7 +237,7 @@ phases:
 
   - id: "M1"
     name: "React Compatibility — Level 1"
-    status: "planned"   # spec = design complete in the R2N architecture sessions; planned = not started
+    status: "in-progress"   # props & children propagation done (M1-T01); hooks/keys/context remain
     window: { start_week: 7, end_week: 12 }
     color: "#34d399"
     blurb: "Behavioral compatibility with React core: full hook set, keys, context, effects, class components, error boundaries, portals, Suspense — validated by a behavioral conformance suite, not API presence."
@@ -245,7 +245,7 @@ phases:
       - id: "M1-T01"
         title: "Props & children propagation through component calls"
         priority: "P0"
-        done: false
+        done: true
       - id: "M1-T02"
         title: "Keys as first-class identity + keyed reconciliation (move vs recreate)"
         priority: "P0"

@@ -52,7 +52,21 @@ pub enum RenderedNode {
 /// Transparent fragment tag: its children reconcile directly at the parent.
 const FRAGMENT: &str = "\0frag";
 
-/// Per-component-instance hook frames, keyed by instance path.
+/// A children splice: the pre-lowered nodes a parent passed to a component
+/// instance (`<Card><b>hi</b></Card>`), the parent's env to evaluate them in
+/// (composition is by reference — nodes keep closing over their original
+/// scope), and the parent's instance path for hook-frame access.
+#[derive(Clone)]
+struct Splice {
+    nodes: Vec<r2n_ir::react::ReactNode>,
+    parent_env: Env,
+    parent_inst: Vec<String>,
+}
+
+/// Active splices, keyed by the CHILD component's instance path. Populated
+/// when a component call renders (its `children` prop), consumed when its
+/// body hits the `ReactNode::Children` splice point.
+type SpliceMap = HashMap<Vec<String>, Splice>;
 #[derive(Debug, Default)]
 pub struct FrameStore {
     frames: HashMap<Vec<String>, HookFrame>,
@@ -163,7 +177,16 @@ impl Runtime {
     fn render_once(&mut self, all: &mut Vec<Patch>) -> Result<(), RuntimeError> {
         let mut host = LogHost { log: &mut self.log };
         let mut scopes = std::mem::take(&mut self.scopes);
-        let tree = render_root(&self.template, &mut self.frames, &mut scopes, &mut host)?;
+        // Splices are rebuilt every pass: they ride the component-call props
+        // (`Value::Children`), so a fresh render re-derives them naturally.
+        let mut splices = SpliceMap::new();
+        let tree = render_root(
+            &self.template,
+            &mut self.frames,
+            &mut scopes,
+            &mut splices,
+            &mut host,
+        )?;
         self.scopes = scopes;
         // Handlers are re-derived from the fresh tree each pass; start clean
         // so handlers on removed nodes disappear.
@@ -239,6 +262,7 @@ fn render_root(
     template: &RuntimeTemplate,
     frames: &mut FrameStore,
     scopes: &mut HashMap<Vec<String>, InstanceScope>,
+    splices: &mut SpliceMap,
     host: &mut dyn Host,
 ) -> Result<RenderedNode, RuntimeError> {
     let root = template.root;
@@ -268,6 +292,7 @@ fn render_root(
         &mut env,
         frames,
         scopes,
+        splices,
         template,
         host,
         &mut effects,
@@ -284,6 +309,7 @@ fn render_node(
     env: &mut Env,
     frames: &mut FrameStore,
     scopes: &mut HashMap<Vec<String>, InstanceScope>,
+    splices: &mut SpliceMap,
     template: &RuntimeTemplate,
     host: &mut dyn Host,
     effects: &mut Vec<EffectBody>,
@@ -331,6 +357,7 @@ fn render_node(
                     env,
                     frames,
                     scopes,
+                    splices,
                     template,
                     host,
                     effects,
@@ -391,12 +418,38 @@ fn render_node(
             );
             // Props are evaluated in the PARENT's scope and frame.
             let mut prop_vals: Vec<(String, Value)> = Vec::with_capacity(props.len());
+            let mut children_nodes: Option<Vec<r2n_ir::react::ReactNode>> = None;
             for (name, expr) in props {
                 let v = {
                     let frame = frames.get(inst_path);
                     eval(expr, env, frame, host, &template.components, effects)?
                 };
+                // The `children` prop carries pre-lowered nodes to splice at
+                // the child's `ReactNode::Children` point. Keep the nodes
+                // AND remember the parent scope they close over.
+                if name == "children" {
+                    if let Value::Children(nodes) = &v {
+                        children_nodes = Some(nodes.clone());
+                    }
+                }
                 prop_vals.push((name.clone(), v));
+            }
+            // Record the splice for this instance (the child body's
+            // `ReactNode::Children` consumes it below). If this instance
+            // renders again, the splice is refreshed here first.
+            if let Some(nodes) = children_nodes {
+                splices.insert(
+                    inst.clone(),
+                    Splice {
+                        nodes,
+                        parent_env: env.clone(),
+                        parent_inst: inst_path.to_vec(),
+                    },
+                );
+            } else {
+                // No children passed: an existing splice from a previous
+                // render is stale — the prop disappeared; render nothing.
+                splices.remove(&inst);
             }
             // The instance's own hook frame + env (the frame protocol).
             let cenv = {
@@ -441,6 +494,7 @@ fn render_node(
                 &mut body_env,
                 frames,
                 scopes,
+                splices,
                 template,
                 host,
                 effects,
@@ -461,6 +515,7 @@ fn render_node(
                 env,
                 frames,
                 scopes,
+                splices,
                 template,
                 host,
                 effects,
@@ -501,6 +556,7 @@ fn render_node(
                     env,
                     frames,
                     scopes,
+                    splices,
                     template,
                     host,
                     effects,
@@ -514,6 +570,46 @@ fn render_node(
                 props: Vec::new(),
                 children: out,
                 key: "frag".to_string(),
+            }
+        }
+        ReactNode::Children => {
+            // The parent's children splice point. Render each stored node in
+            // the PARENT's env (against the parent's hook frame) — composition
+            // by reference: the nodes still close over their original scope,
+            // so a `{n}` inside `<Card>{n}</Card>` reads the parent's `n`.
+            // A component that receives no children renders nothing here.
+            let mut out = Vec::new();
+            if let Some(splice) = splices.get(inst_path).cloned() {
+                let Splice {
+                    nodes,
+                    parent_env,
+                    parent_inst,
+                } = splice;
+                let mut penv = parent_env.clone();
+                let pinst = parent_inst.clone();
+                for (i, node) in nodes.iter().enumerate() {
+                    let child_node = child_path(node_path, i, &format!("^{i}"));
+                    let mut rn = render_node(
+                        node,
+                        &pinst,
+                        &child_node,
+                        &mut penv,
+                        frames,
+                        scopes,
+                        splices,
+                        template,
+                        host,
+                        effects,
+                    )?;
+                    set_key(&mut rn, &format!("^{i}"));
+                    out.push(rn);
+                }
+            }
+            RenderedNode::Host {
+                tag: FRAGMENT.to_string(),
+                props: Vec::new(),
+                children: out,
+                key: "cfrag".to_string(),
             }
         }
     })

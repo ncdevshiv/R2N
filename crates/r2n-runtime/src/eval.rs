@@ -143,6 +143,10 @@ pub fn eval(
         JsExpr::Builtin(_) => Err(RuntimeError::new(
             "builtin references are not supported in the AOT-only subset",
         )),
+        // The pre-lowered children of a component call: carried verbatim as
+        // a `Value::Children`. The nodes still belong to the parent scope;
+        // the component that received them splices them (engine.rs).
+        JsExpr::Children(nodes) => Ok(Value::Children(nodes.clone())),
     }
 }
 
