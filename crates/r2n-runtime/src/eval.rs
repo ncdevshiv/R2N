@@ -400,10 +400,23 @@ fn call_var(
             } else {
                 None
             };
-            let should_run = frame.use_effect(deps);
-            if should_run && !args.is_empty() {
+            // React cleanup form: the effect arrow's VALUE is a cleanup
+            // arrow (`() => { s(); return () => c(); }` — or the shorthand
+            // `() => () => c()`). The cleanup body + current env are stored
+            // with the slot; when the deps change or the component unmounts,
+            // the cleanup runs BEFORE the next setup (React ordering).
+            let cleanup = match args.first() {
+                Some(JsExpr::Closure { body, .. }) => cleanup_of(body, env),
+                _ => None,
+            };
+            let (should_run, old_cleanup) = frame.use_effect(deps, cleanup);
+            if should_run {
+                // The previous cleanup (deps changed) runs first, then the
+                // new setup — both after commit, in hook order.
+                if let Some(old) = old_cleanup {
+                    effects.push(old);
+                }
                 if let JsExpr::Closure { body, .. } = &args[0] {
-                    // Run after commit with the env captured now.
                     effects.push(EffectBody {
                         body: (**body).clone(),
                         env: env.clone(),
@@ -533,6 +546,28 @@ fn call_filter(
         }
     }
     Ok(Value::Array(out))
+}
+
+/// The cleanup closure of an effect arrow: an arrow in the effect body's
+/// VALUE position (the last statement of a block body, per the `return`
+/// spelling, or the whole body for `() => () => cleanup()`). Returns the
+/// cleanup's own body + the env captured at effect registration.
+fn cleanup_of(body: &JsExpr, env: &Env) -> Option<EffectBody> {
+    let cleanup_body = match body {
+        // `() => () => cleanup()` — the effect body IS the cleanup arrow.
+        JsExpr::Closure { body, .. } => Some((**body).clone()),
+        // `{ setup(); return <arrow>; }` — the block's VALUE (last expr)
+        // is the cleanup arrow; earlier statements are setup side effects.
+        JsExpr::Block(stmts) => match stmts.last() {
+            Some(JsExpr::Closure { body, .. }) => Some((**body).clone()),
+            _ => None,
+        },
+        _ => None,
+    }?;
+    Some(EffectBody {
+        body: cleanup_body,
+        env: env.clone(),
+    })
 }
 
 fn deps_from_value(v: &Value) -> Vec<Value> {

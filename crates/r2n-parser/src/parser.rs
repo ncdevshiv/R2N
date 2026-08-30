@@ -577,6 +577,18 @@ impl<'a> Parser<'a> {
             self.advance()?;
             let mut stmts = Vec::new();
             while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
+                // `return expr;` as the (terminal) statement of a block-bodied
+                // arrow: the returned expr becomes the block's VALUE — the
+                // block terminates here (React's effect cleanup form:
+                // `() => { setup(); return () => cleanup(); }`).
+                if matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "return") {
+                    self.advance()?;
+                    stmts.push(self.parse_expr()?);
+                    if self.check(&TokenKind::Semicolon) {
+                        self.advance()?;
+                    }
+                    break;
+                }
                 stmts.push(self.parse_expr()?);
                 if self.check(&TokenKind::Semicolon) {
                     self.advance()?;

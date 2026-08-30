@@ -642,6 +642,16 @@ impl<'e, 'a> SpanParser<'e, 'a> {
             self.bump();
             let mut stmts = Vec::new();
             while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
+                // `return expr;` is terminal: the expr is the block's VALUE
+                // (cleanup-returning effect arrows). Mirrors parser.rs.
+                if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "return") {
+                    self.bump();
+                    stmts.push(self.parse_expr()?);
+                    if self.check(&TokenKind::Semicolon) {
+                        self.bump();
+                    }
+                    break;
+                }
                 stmts.push(self.parse_expr()?);
                 if self.check(&TokenKind::Semicolon) {
                     self.bump();
