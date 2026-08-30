@@ -35,8 +35,18 @@ fn main() {
 
     let template = match r2n_compiler::compile_source(&src) {
         Ok(t) => t,
-        Err(e) => {
-            eprintln!("compile error: {e}");
+        Err(_) => {
+            // Compile failed: report every error found in the source, not
+            // just the first — rendered with the offending line and a caret.
+            match r2n_compiler::collect_diagnostics(&src) {
+                Ok(all) => {
+                    for diag in &all {
+                        eprintln!("{diag}\n");
+                    }
+                    eprintln!("found {} error(s)", all.len());
+                }
+                Err(fatal) => eprintln!("compile error: {fatal}"),
+            }
             exit(1);
         }
     };

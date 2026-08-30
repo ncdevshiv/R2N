@@ -24,10 +24,10 @@ source (.r2n)  →  Lexer  →  Parser (AST)  →  Lowering  →  JS IR ─┐
 |---|---|---|
 | M0.1 Foundation — workspace & vertical slice | **DONE** | 13/13 |
 | M0.2 Reactive runtime loop | **DONE** | 14/14 |
-| M0.3 Compiler frontend (JS/JSX → IR) | in progress | 8/9 |
+| M0.3 Compiler frontend (JS/JSX → IR) | **DONE** | 9/9 |
 | M1–M7 | planned | — |
 
-**Overall: 35/106 roadmap tasks.** Every claim above is backed by the test suite (`cargo test`) and the architecture-guard tests. See [roadmap/CHECKLIST.md](roadmap/CHECKLIST.md) for the task-level record, [JOURNAL.md](JOURNAL.md) for decision history, and [docs/AUDIT.md](docs/AUDIT.md) for the latest audit report.
+**Overall: 36/106 roadmap tasks.** Every claim above is backed by the test suite (`cargo test`) and the architecture-guard tests. See [roadmap/CHECKLIST.md](roadmap/CHECKLIST.md) for the task-level record, [JOURNAL.md](JOURNAL.md) for decision history, and [docs/AUDIT.md](docs/AUDIT.md) for the latest audit report.
 
 ### What works today (all test-verified)
 
@@ -39,7 +39,7 @@ source (.r2n)  →  Lexer  →  Parser (AST)  →  Lowering  →  JS IR ─┐
 
 ### What is deliberately not done yet
 
-A FIFO scheduler queue (state currently re-renders via a dirty-flag loop), the formal 14-criteria M0.2 acceptance sweep, artifact version stamps, and everything in M1–M7 (full hook set, JS semantics, specialization, non-memory renderers, Go/Elixir runtimes, ecosystem compat, productionization). The [issues board](https://github.com/ncdevshiv/R2N/issues) tracks all of it; nothing is claimed that isn't tested.
+Everything in M1–M7: the full React hook set and behavioral conformance suite, full ECMAScript semantics, the specialization/optimization pipeline, non-memory renderers (native/WASM/terminal), the Go/Elixir runtimes, npm/browser-API compatibility, and productionization. The [issues board](https://github.com/ncdevshiv/R2N/issues) tracks all of it; nothing is claimed that isn't tested.
 
 ## Architecture rules (enforced by CI, not by convention)
 
@@ -52,7 +52,7 @@ A FIFO scheduler queue (state currently re-renders via a dirty-flag loop), the f
 
 ```bash
 cargo build --workspace
-cargo test --workspace          # 54 tests incl. architecture + acceptance guards
+cargo test --workspace          # 65 tests incl. architecture + acceptance guards
 cargo clippy --workspace --all-targets -- -D warnings
 scripts/verify-audit-claims.sh  # re-derives every README/roadmap claim from source
 ```

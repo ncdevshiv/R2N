@@ -3,10 +3,12 @@
 mod error;
 mod lexer;
 mod parser;
+mod recovery;
 
 pub use error::ParseError;
 pub use lexer::{Lexer, Token, TokenKind};
 pub use parser::Parser;
+pub use recovery::{parse_with_recovery, Recovered};
 
 /// Parse a complete R2N source program string into an AST.
 pub fn parse(src: &str) -> Result<r2n_ast::program::Program, ParseError> {

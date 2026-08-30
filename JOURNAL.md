@@ -199,3 +199,63 @@ fix is a check, not just an edit.
 **CHOSE**
 Reconcile the records, then enforce agreement in CI: status is derived from
 task flags, and every surface must agree or the build fails.
+
+## 2026-08-30 — Entry 5: M0.3-T08 Diagnostics — Multi-Error Reporting with Recovery
+
+**PLAN**
+Close the last M0.3 task: turn single-error, Debug-formatted parse failures
+into friendly multi-error diagnostics — all errors in one pass, rendered with
+source lines and carets, printed by the CLI.
+
+**WHAT**
+- `TokenKind::describe()`: friendly token names — `` `;` ``, `` `=>` ``,
+  "end of file" — replacing `{:?}` Debug output in every parser message.
+- `ParseError::render(src)`: rustc-style snippet — line-number gutter, the
+  offending source line, a caret under the error column (tabs expanded).
+- Lexer bug found and fixed while testing carets: `Token::column` had
+  inconsistent semantics — single-char tokens recorded the *pre-consumption*
+  column, multi-char tokens the *post-consumption* one, so a caret could land
+  anywhere. Tokens now record their own first-character position
+  (`token_line`/`token_col`, 1-based) captured in `next_token` before any
+  character is consumed.
+- `parse_with_recovery` (new `recovery.rs`): re-runs the same grammar over a
+  flat token list with two recovery levels — a failed statement inside a
+  component body is recorded and the parser re-syncs at the next
+  `let`/`const`/`return`/`;`/`}`; a failed top-level declaration re-syncs at
+  the next `import`/`component`/`export`. Lexer errors (unterminated
+  string/comment) stay fatal — no sane resumption point.
+- Grammar parity is enforced by test: on error-free sources (all three
+  examples + a full-grammar exercise) the recovering parser must produce an
+  AST identical (`PartialEq`) to the strict parser's, and report zero errors.
+  JSX text children are sliced from source byte offsets between token
+  boundaries — the same span the strict lexer's `rescan_jsx_text` yields.
+- `r2n_compiler::collect_diagnostics`: parse-with-recovery rendered output;
+  lowering errors appended when the parse is clean.
+- CLI: on compile failure prints every diagnostic with its rendered snippet
+  and a `found N error(s)` summary; exit code 1 unchanged.
+- 11 new tests (`crates/r2n-parser/tests/diagnostics.rs`): parity, multi-error
+  collection (statement and component level), recovery keeping later valid
+  statements/declarations, friendly messages, caret alignment, strict-parser
+  semantics unchanged. Suite: 65 green, clippy clean.
+
+**WHY**
+One error per edit-compile round-trip is hostile to users; compilers are
+judged by their diagnostics. The parity test exists because recovery parsers
+accept-and-recover differently than strict ones by nature — the only honest
+way to claim "recovery" is to prove it changes nothing on valid input.
+
+**OPTIONS**
+- Error recovery inside expressions (skip to matching paren): rejected —
+  cascades: one bad expression would report every following token as an error.
+  Statement-level granularity is the standard sweet spot (rustc does the same).
+- Reuse the strict parser struct with an error-collecting mode: rejected —
+  the strict parser drives a live lexer (needed for `looks_like_arrow` and
+  JSX rescanning); threading recovery through it would entangle the two. The
+  flat-token-list twin mirrors the grammar 1:1 and is parity-tested instead.
+- Keep Debug token names: rejected — `expected Semicolon, found Ident("x")`
+  is compiler-speak; users read `` expected `;`, found `x` ``.
+
+**CHOSE**
+Full recovery with proven parity, friendly names, carets; records updated in
+the same PR (CHECKLIST/yaml/toml M0.3 → DONE 9/9, 36/106 overall), issue #7
+closed by the merge.

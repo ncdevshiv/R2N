@@ -1,123 +1,174 @@
-//! Recursive-descent parser: tokens -> `r2n_ast::Program`.
+//! Multi-error diagnostics: parse with recovery.
 //!
-//! Grammar (subset, precedence climbing):
-//!
-//! ```text
-//! program     := decl* EOF
-//! decl        := import | component | export-default
-//! import      := "import" "{" ident ("," ident)* "}" "from" string ";"
-//! component   := "component" ident "(" params? ")" "{" stmt* "}"
-//! params      := ident ("," ident)*
-//! stmt        := ("let" | "const") ident "=" expr ";"
-//!              | "return" expr ";"
-//! export      := "export" "default" ident ";"
-//!
-//! expr        := ternary
-//! ternary     := or ("?" ternary ":" ternary)?
-//! or          := and ("||" and)*
-//! and         := equality ("&&" equality)*
-//! equality    := comparison (("=="|"!=") comparison)*
-//! comparison  := additive (("<"|">"|"<="|">=") additive)*
-//! additive    := multiplicative (("+"|"-") multiplicative)*
-//! multiplicative := unary (("*"|"/"|"%") unary)*
-//! unary       := ("-"|"!") unary | postfix
-//! postfix     := primary ("." ident | "(" args? ")" | "[" expr "]")*
-//! primary     := literal | ident | arrow | "(" expr ")"
-//!              | element | array
-//! element     := "<" tag (attr)* ("/>" | ">" children "</" tag ">")
-//! attr        := ident ("=" expr)?   (where expr may be `{...}`)
-//! arrow       := "(" params? ")" "=>" expr
-//! ```
+//! The strict parser (`parse`) stops at the first error — correct for the
+//! compiler pipeline, where one error means no artifact. But a compiler tool
+//! should tell the user about *all* their mistakes in one pass, not one per
+//! edit-compile round-trip. This module runs the same grammar over a flat
+//! token list with recovery: a failed statement inside a component body is
+//! recorded and the parser re-syncs at the next statement boundary; a failed
+//! top-level declaration is recorded and the parser re-syncs at the next
+//! declaration keyword. The recovered AST must not be compiled when errors
+//! exist — the output is the error list. When there are no errors, the AST
+//! is byte-for-byte the same as the strict parser's (asserted in tests).
 
 use crate::error::ParseError;
 use crate::lexer::{Lexer, Token, TokenKind};
 use r2n_ast::expr::{Element, Expr, Prop};
+use r2n_ast::lit::Literal;
 use r2n_ast::op::{BinOp, UnOp};
 use r2n_ast::program::{Component, Decl, Import, Program, Stmt};
 
-pub struct Parser<'a> {
-    lexer: Lexer<'a>,
-    current: Token,
+/// The result of a recovering parse: a program (partial if any error
+/// occurred) and every error found along the way.
+pub struct Recovered {
+    pub program: Program,
+    pub errors: Vec<ParseError>,
 }
 
-impl<'a> Parser<'a> {
-    pub fn new(src: &'a str) -> Result<Self, ParseError> {
-        let mut lexer = Lexer::new(src)?;
-        let current = lexer.next_token()?;
-        Ok(Self { lexer, current })
+impl Recovered {
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+}
+
+/// Parse `src`, collecting every recoverable error instead of stopping at
+/// the first. Lexer-level failures (unterminated string/comment) are still
+/// fatal: there is no sane position to resume tokenization from.
+pub fn parse_with_recovery(src: &str) -> Result<Recovered, ParseError> {
+    let mut lexer = Lexer::new(src)?;
+    let mut tokens = Vec::new();
+    loop {
+        let tok = lexer.next_token()?;
+        let eof = matches!(tok.kind, TokenKind::Eof);
+        tokens.push(tok);
+        if eof {
+            break;
+        }
     }
 
-    fn advance(&mut self) -> Result<Token, ParseError> {
-        let prev = self.current.clone();
-        self.current = self.lexer.next_token()?;
-        Ok(prev)
+    let mut errors = Vec::new();
+    let mut program = Program::new();
+    let mut i = 0usize;
+    while i < tokens.len() && !matches!(tokens[i].kind, TokenKind::Eof) {
+        let mut p = SpanParser {
+            tokens: &tokens[i..],
+            pos: 0,
+            src,
+            errors: &mut errors,
+        };
+        match p.parse_decl() {
+            Ok(decl) => {
+                let consumed = p.pos;
+                if let Decl::ExportDefault(name) = &decl {
+                    program.root = Some(name.clone());
+                }
+                program.decls.push(decl);
+                // `consumed` is 0 only when the decl consumed nothing but
+                // still succeeded — impossible for a real decl, but guard so
+                // the loop always advances.
+                i += consumed.max(1);
+            }
+            Err(err) => {
+                errors.push(err);
+                // Re-sync at the next declaration keyword or `;`. The token
+                // at the failure point is always consumed (the error may be
+                // about the current token itself, e.g. `expected an
+                // identifier` — retrying from the same spot would loop).
+                i += 1;
+                while i < tokens.len() {
+                    match &tokens[i].kind {
+                        TokenKind::Semicolon | TokenKind::Eof => break,
+                        TokenKind::Ident(kw)
+                            if matches!(kw.as_str(), "import" | "component" | "export") =>
+                        {
+                            break
+                        }
+                        _ => i += 1,
+                    }
+                }
+                // A `;` is a dead end, not a new declaration: consume it so
+                // the next iteration sees what follows it.
+                if matches!(tokens[i].kind, TokenKind::Semicolon) {
+                    i += 1;
+                }
+            }
+        }
     }
 
-    fn pos(&self) -> (usize, usize) {
-        (self.current.line, self.current.column)
+    if program.root.is_none() {
+        let (l, c) = tokens.last().map(|t| (t.line, t.column)).unwrap_or((1, 0));
+        errors.push(ParseError::new(l, c, "no `export default` component found"));
+    }
+
+    Ok(Recovered { program, errors })
+}
+
+/// A parser over a flat token list. Mirrors `parser::Parser`'s grammar
+/// exactly (same productions, same messages) with two differences made
+/// possible by the flat list: arrows are detected by direct token lookahead
+/// (`arrow_follows`) instead of lexer re-lexing, and JSX text children are
+/// sliced from `src` between token byte offsets — the same span the strict
+/// parser's `rescan_jsx_text` produces. `errors` accumulates statement-level
+/// failures inside component bodies; the caller handles declaration-level
+/// re-sync.
+struct SpanParser<'e, 'a> {
+    tokens: &'a [Token],
+    pos: usize,
+    src: &'a str,
+    errors: &'e mut Vec<ParseError>,
+}
+
+impl<'e, 'a> SpanParser<'e, 'a> {
+    /// The token vector always ends with Eof, so `cur` never panics.
+    fn cur(&self) -> &Token {
+        &self.tokens[self.pos.min(self.tokens.len() - 1)]
     }
 
     fn err(&self, msg: &str) -> ParseError {
-        let (l, c) = self.pos();
-        ParseError::new(l, c, msg.to_string())
+        let t = self.cur();
+        ParseError::new(t.line, t.column, msg.to_string())
     }
 
     fn check(&self, kind: &TokenKind) -> bool {
-        self.current.kind == *kind
+        self.cur().kind == *kind
+    }
+
+    fn bump(&mut self) {
+        if self.pos < self.tokens.len() {
+            self.pos += 1;
+        }
     }
 
     fn expect(&mut self, kind: TokenKind) -> Result<(), ParseError> {
-        if self.current.kind == kind {
-            self.advance()?;
+        if self.cur().kind == kind {
+            self.bump();
             Ok(())
         } else {
             Err(self.err(&format!(
                 "expected {}, found {}",
                 kind.describe(),
-                self.current.kind.describe()
+                self.cur().kind.describe()
             )))
         }
     }
 
     fn expect_ident(&mut self) -> Result<String, ParseError> {
-        if let TokenKind::Ident(name) = &self.current.kind {
+        if let TokenKind::Ident(name) = &self.cur().kind {
             let n = name.clone();
-            self.advance()?;
+            self.bump();
             Ok(n)
         } else {
             Err(self.err(&format!(
                 "expected an identifier, found {}",
-                self.current.kind.describe()
+                self.cur().kind.describe()
             )))
         }
     }
 
-    fn is_component_name(name: &str) -> bool {
-        name.chars()
-            .next()
-            .map(|c| c.is_ascii_uppercase())
-            .unwrap_or(false)
-    }
-
-    // ---- program ----
-
-    pub fn parse_program(&mut self) -> Result<Program, ParseError> {
-        let mut program = Program::new();
-        while !self.check(&TokenKind::Eof) {
-            let decl = self.parse_decl()?;
-            if let Decl::ExportDefault(name) = &decl {
-                program.root = Some(name.clone());
-            }
-            program.decls.push(decl);
-        }
-        if program.root.is_none() {
-            return Err(self.err("no `export default` component found"));
-        }
-        Ok(program)
-    }
+    // ---- declarations ----
 
     fn parse_decl(&mut self) -> Result<Decl, ParseError> {
-        match &self.current.kind {
+        match &self.cur().kind {
             TokenKind::Ident(kw) if kw == "import" => self.parse_import(),
             TokenKind::Ident(kw) if kw == "component" => {
                 Ok(Decl::Component(self.parse_component()?))
@@ -128,67 +179,102 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_import(&mut self) -> Result<Decl, ParseError> {
-        self.expect(TokenKind::Ident("import".to_string()))?;
+        self.bump(); // "import"
         self.expect(TokenKind::LeftBrace)?;
         let mut names = Vec::new();
         if !self.check(&TokenKind::RightBrace) {
             names.push(self.expect_ident()?);
             while self.check(&TokenKind::Comma) {
-                self.advance()?;
+                self.bump();
                 names.push(self.expect_ident()?);
             }
         }
         self.expect(TokenKind::RightBrace)?;
-        if !matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "from") {
+        if !matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "from") {
             return Err(self.err("expected `from` after import names"));
         }
-        self.advance()?;
-        let path = match &self.current.kind {
-            TokenKind::String(s) => s.clone(),
+        self.bump();
+        let path = match &self.cur().kind {
+            TokenKind::String(s) => {
+                let p = s.clone();
+                self.bump();
+                p
+            }
             _ => return Err(self.err("expected module path string")),
         };
-        self.advance()?;
         self.expect(TokenKind::Semicolon)?;
         Ok(Decl::Import(Import { names, path }))
     }
 
     fn parse_export(&mut self) -> Result<Decl, ParseError> {
-        self.expect(TokenKind::Ident("export".to_string()))?;
-        if !matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "default") {
+        self.bump(); // "export"
+        if !matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "default") {
             return Err(self.err("only `export default` is supported"));
         }
-        self.advance()?;
+        self.bump();
         let name = self.expect_ident()?;
         self.expect(TokenKind::Semicolon)?;
         Ok(Decl::ExportDefault(name))
     }
 
     fn parse_component(&mut self) -> Result<Component, ParseError> {
-        self.expect(TokenKind::Ident("component".to_string()))?;
+        self.bump(); // "component"
         let name = self.expect_ident()?;
         self.expect(TokenKind::LeftParen)?;
         let mut params = Vec::new();
         if !self.check(&TokenKind::RightParen) {
             params.push(self.expect_ident()?);
             while self.check(&TokenKind::Comma) {
-                self.advance()?;
+                self.bump();
                 params.push(self.expect_ident()?);
             }
         }
         self.expect(TokenKind::RightParen)?;
         self.expect(TokenKind::LeftBrace)?;
         let mut body = Vec::new();
-        while !self.check(&TokenKind::RightBrace) {
-            body.push(self.parse_stmt()?);
+        // Statement-level recovery: record each failed statement, re-sync at
+        // the next statement start (`let`/`const`/`return`) or the closing
+        // `}`. Statements that parse cleanly are kept, so a later valid
+        // statement is not lost to an earlier bad one.
+        while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
+            let before = self.pos;
+            match self.parse_stmt() {
+                Ok(stmt) => body.push(stmt),
+                Err(stmt_err) => {
+                    self.errors.push(stmt_err);
+                    // Re-sync: skip tokens until a fresh statement keyword,
+                    // a `;` (end of the bad statement's remains), or the
+                    // component's closing `}`.
+                    self.pos = self.pos.max(before); // ensure progress
+                    self.sync_to_stmt_boundary();
+                    // A `;` ends the bad statement: consume it so the next
+                    // iteration starts at a real statement.
+                    if self.check(&TokenKind::Semicolon) {
+                        self.bump();
+                    }
+                }
+            }
         }
         self.expect(TokenKind::RightBrace)?;
         Ok(Component { name, params, body })
     }
 
+    /// Skip tokens until a plausible statement/component boundary.
+    fn sync_to_stmt_boundary(&mut self) {
+        loop {
+            match &self.cur().kind {
+                TokenKind::Eof | TokenKind::Semicolon => return,
+                TokenKind::RightBrace => return,
+                TokenKind::Ident(kw) if matches!(kw.as_str(), "let" | "const" | "return") => return,
+                _ => self.bump(),
+            }
+        }
+    }
+
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
-        match &self.current.kind {
+        match &self.cur().kind {
             TokenKind::Ident(kw) if kw == "let" => {
-                self.advance()?;
+                self.bump();
                 let name = self.expect_ident()?;
                 self.expect(TokenKind::Equals)?;
                 let value = self.parse_expr()?;
@@ -196,7 +282,7 @@ impl<'a> Parser<'a> {
                 Ok(Stmt::Let { name, value })
             }
             TokenKind::Ident(kw) if kw == "const" => {
-                self.advance()?;
+                self.bump();
                 let name = self.expect_ident()?;
                 self.expect(TokenKind::Equals)?;
                 let value = self.parse_expr()?;
@@ -204,35 +290,34 @@ impl<'a> Parser<'a> {
                 Ok(Stmt::Const { name, value })
             }
             TokenKind::Ident(kw) if kw == "return" => {
-                self.advance()?;
+                self.bump();
                 let value = self.parse_expr()?;
-                // In JSX body form, a trailing `;` is optional.
+                // In JSX body form a trailing `;` is optional (strict parity).
                 if self.check(&TokenKind::Semicolon) {
-                    self.advance()?;
+                    self.bump();
                 }
                 Ok(Stmt::Return(value))
             }
-            // Bare expression statement (side effects, e.g. `useEffect(...);`).
             _ => {
                 let value = self.parse_expr()?;
                 if self.check(&TokenKind::Semicolon) {
-                    self.advance()?;
+                    self.bump();
                 }
                 Ok(Stmt::Expr(value))
             }
         }
     }
 
-    // ---- expressions (precedence climbing) ----
+    // ---- expressions (precedence climbing, mirroring parser.rs) ----
 
-    pub fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         self.parse_ternary()
     }
 
     fn parse_ternary(&mut self) -> Result<Expr, ParseError> {
         let cond = self.parse_or()?;
         if self.check(&TokenKind::Question) {
-            self.advance()?;
+            self.bump();
             let then = self.parse_ternary()?;
             self.expect(TokenKind::Colon)?;
             let else_ = self.parse_ternary()?;
@@ -249,7 +334,7 @@ impl<'a> Parser<'a> {
     fn parse_or(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_and()?;
         while self.check(&TokenKind::PipePipe) {
-            self.advance()?;
+            self.bump();
             let right = self.parse_and()?;
             left = Expr::Binary {
                 op: BinOp::Or,
@@ -263,7 +348,7 @@ impl<'a> Parser<'a> {
     fn parse_and(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_equality()?;
         while self.check(&TokenKind::AmpAmp) {
-            self.advance()?;
+            self.bump();
             let right = self.parse_equality()?;
             left = Expr::Binary {
                 op: BinOp::And,
@@ -277,12 +362,12 @@ impl<'a> Parser<'a> {
     fn parse_equality(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_comparison()?;
         loop {
-            let op = match &self.current.kind {
+            let op = match &self.cur().kind {
                 TokenKind::EqEq => BinOp::Eq,
                 TokenKind::BangEq => BinOp::Neq,
                 _ => break,
             };
-            self.advance()?;
+            self.bump();
             let right = self.parse_comparison()?;
             left = Expr::Binary {
                 op,
@@ -296,14 +381,14 @@ impl<'a> Parser<'a> {
     fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_additive()?;
         loop {
-            let op = match &self.current.kind {
+            let op = match &self.cur().kind {
                 TokenKind::Lt => BinOp::Lt,
                 TokenKind::Gt => BinOp::Gt,
                 TokenKind::LtEq => BinOp::Le,
                 TokenKind::GtEq => BinOp::Ge,
                 _ => break,
             };
-            self.advance()?;
+            self.bump();
             let right = self.parse_additive()?;
             left = Expr::Binary {
                 op,
@@ -317,12 +402,12 @@ impl<'a> Parser<'a> {
     fn parse_additive(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_multiplicative()?;
         loop {
-            let op = match &self.current.kind {
+            let op = match &self.cur().kind {
                 TokenKind::Plus => BinOp::Add,
                 TokenKind::Minus => BinOp::Sub,
                 _ => break,
             };
-            self.advance()?;
+            self.bump();
             let right = self.parse_multiplicative()?;
             left = Expr::Binary {
                 op,
@@ -336,13 +421,13 @@ impl<'a> Parser<'a> {
     fn parse_multiplicative(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_unary()?;
         loop {
-            let op = match &self.current.kind {
+            let op = match &self.cur().kind {
                 TokenKind::Star => BinOp::Mul,
                 TokenKind::Slash => BinOp::Div,
                 TokenKind::Percent => BinOp::Mod,
                 _ => break,
             };
-            self.advance()?;
+            self.bump();
             let right = self.parse_unary()?;
             left = Expr::Binary {
                 op,
@@ -354,9 +439,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
-        match &self.current.kind {
+        match &self.cur().kind {
             TokenKind::Minus => {
-                self.advance()?;
+                self.bump();
                 let expr = self.parse_unary()?;
                 Ok(Expr::Unary {
                     op: UnOp::Neg,
@@ -364,7 +449,7 @@ impl<'a> Parser<'a> {
                 })
             }
             TokenKind::Bang => {
-                self.advance()?;
+                self.bump();
                 let expr = self.parse_unary()?;
                 Ok(Expr::Unary {
                     op: UnOp::Not,
@@ -378,9 +463,9 @@ impl<'a> Parser<'a> {
     fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.parse_primary()?;
         loop {
-            match &self.current.kind {
+            match &self.cur().kind {
                 TokenKind::Dot => {
-                    self.advance()?;
+                    self.bump();
                     let prop = self.expect_ident()?;
                     expr = Expr::Member {
                         base: Box::new(expr),
@@ -388,24 +473,21 @@ impl<'a> Parser<'a> {
                     };
                 }
                 TokenKind::LeftParen => {
-                    // An arrow `(params) => body` can appear in call position
-                    // (e.g. `arr.map((x) => <li/>)`). Detect it before treating
-                    // this as a function call.
-                    if self.looks_like_arrow() {
-                        self.advance()?; // consume '('
+                    if self.arrow_follows() {
+                        // `(params) => body` as the sole call argument,
+                        // e.g. `items.map((x) => <li/>)`.
+                        self.bump(); // '('
                         let mut params = Vec::new();
                         if !self.check(&TokenKind::RightParen) {
                             params.push(self.expect_ident()?);
                             while self.check(&TokenKind::Comma) {
-                                self.advance()?;
+                                self.bump();
                                 params.push(self.expect_ident()?);
                             }
                         }
                         self.expect(TokenKind::RightParen)?;
                         self.expect(TokenKind::Arrow)?;
                         let body = self.parse_arrow_body()?;
-                        // This arrow is the sole argument of the call we are
-                        // currently parsing (e.g. `arr.map((x) => ...)`). Wrap it.
                         expr = Expr::Call {
                             callee: Box::new(expr),
                             args: vec![Expr::Arrow {
@@ -413,16 +495,14 @@ impl<'a> Parser<'a> {
                                 body: Box::new(body),
                             }],
                         };
-                        // Consume the call's own closing `)` (the `)` of `.map(`
-                        // distinct from the arrow's `(x)`).
                         self.expect(TokenKind::RightParen)?;
                     } else {
-                        self.advance()?;
+                        self.bump();
                         let mut args = Vec::new();
                         if !self.check(&TokenKind::RightParen) {
                             args.push(self.parse_expr()?);
                             while self.check(&TokenKind::Comma) {
-                                self.advance()?;
+                                self.bump();
                                 args.push(self.parse_expr()?);
                             }
                         }
@@ -434,7 +514,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 TokenKind::LeftBracket => {
-                    self.advance()?;
+                    self.bump();
                     let idx = self.parse_expr()?;
                     self.expect(TokenKind::RightBracket)?;
                     expr = Expr::Call {
@@ -451,44 +531,61 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    /// `( ident (, ident)* ) =>` starting at the current `(` — the
+    /// token-list equivalent of the strict parser's lexer lookahead.
+    fn arrow_follows(&self) -> bool {
+        if !self.check(&TokenKind::LeftParen) {
+            return false;
+        }
+        let mut j = self.pos + 1;
+        loop {
+            match self.tokens.get(j).map(|t| &t.kind) {
+                Some(TokenKind::Ident(_)) | Some(TokenKind::Comma) => j += 1,
+                Some(TokenKind::RightParen) => {
+                    return matches!(
+                        self.tokens.get(j + 1).map(|t| &t.kind),
+                        Some(TokenKind::Arrow)
+                    );
+                }
+                _ => return false,
+            }
+        }
+    }
+
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
-        match &self.current.kind {
+        match self.cur().kind.clone() {
             TokenKind::Int(i) => {
-                let v = *i;
-                self.advance()?;
-                Ok(Expr::Literal(r2n_ast::lit::Literal::Int(v)))
+                self.bump();
+                Ok(Expr::Literal(Literal::Int(i)))
             }
             TokenKind::Float(f) => {
-                let v = *f;
-                self.advance()?;
-                Ok(Expr::Literal(r2n_ast::lit::Literal::Float(v)))
+                self.bump();
+                Ok(Expr::Literal(Literal::Float(f)))
             }
             TokenKind::String(s) => {
-                let v = s.clone();
-                self.advance()?;
-                Ok(Expr::Literal(r2n_ast::lit::Literal::String(v)))
+                self.bump();
+                Ok(Expr::Literal(Literal::String(s)))
             }
             TokenKind::Ident(name) if name == "true" => {
-                self.advance()?;
-                Ok(Expr::Literal(r2n_ast::lit::Literal::Bool(true)))
+                self.bump();
+                Ok(Expr::Literal(Literal::Bool(true)))
             }
             TokenKind::Ident(name) if name == "false" => {
-                self.advance()?;
-                Ok(Expr::Literal(r2n_ast::lit::Literal::Bool(false)))
+                self.bump();
+                Ok(Expr::Literal(Literal::Bool(false)))
             }
             TokenKind::Ident(name) if name == "null" => {
-                self.advance()?;
-                Ok(Expr::Literal(r2n_ast::lit::Literal::Null))
+                self.bump();
+                Ok(Expr::Literal(Literal::Null))
             }
-            // arrow function: "(" params? ")" "=>" expr
             TokenKind::LeftParen => {
-                if self.looks_like_arrow() {
-                    self.advance()?; // consume the '('
+                if self.arrow_follows() {
+                    self.bump(); // '('
                     let mut params = Vec::new();
                     if !self.check(&TokenKind::RightParen) {
                         params.push(self.expect_ident()?);
                         while self.check(&TokenKind::Comma) {
-                            self.advance()?;
+                            self.bump();
                             params.push(self.expect_ident()?);
                         }
                     }
@@ -500,23 +597,22 @@ impl<'a> Parser<'a> {
                         body: Box::new(body),
                     })
                 } else {
-                    self.advance()?; // consume the '('
+                    self.bump();
                     let e = self.parse_expr()?;
                     self.expect(TokenKind::RightParen)?;
                     Ok(e)
                 }
             }
             TokenKind::Ident(name) if name == "if" => {
-                // `if cond { then } else { else }` -> ternary.
-                self.advance()?;
+                self.bump();
                 let cond = self.parse_expr()?;
                 self.expect(TokenKind::LeftBrace)?;
                 let then = self.parse_expr()?;
                 self.expect(TokenKind::RightBrace)?;
-                if !matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "else") {
+                if !matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "else") {
                     return Err(self.err("expected `else` after `if` block"));
                 }
-                self.advance()?;
+                self.bump();
                 self.expect(TokenKind::LeftBrace)?;
                 let else_ = self.parse_expr()?;
                 self.expect(TokenKind::RightBrace)?;
@@ -527,59 +623,28 @@ impl<'a> Parser<'a> {
                 })
             }
             TokenKind::Ident(name) => {
-                let n = name.clone();
-                self.advance()?;
-                let is_component = Self::is_component_name(&n);
-                Ok(Expr::Ident {
-                    name: n,
-                    is_component,
-                })
+                self.bump();
+                let is_component = name
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_uppercase())
+                    .unwrap_or(false);
+                Ok(Expr::Ident { name, is_component })
             }
             TokenKind::LeftBracket => self.parse_array(),
             TokenKind::Lt => self.parse_element(),
-            _ => Err(self.err(&format!(
-                "unexpected {} in expression",
-                self.current.kind.describe()
-            ))),
+            other => Err(self.err(&format!("unexpected {} in expression", other.describe()))),
         }
     }
 
-    /// Cheap multi-token lookahead to decide whether `(` begins an arrow
-    /// function `(params) => expr` rather than a parenthesized expression.
-    /// When this is called, `self.current` is `LeftParen` and `self.lexer`
-    /// (which is `Copy`) is positioned to emit the token *after* `(`.
-    fn looks_like_arrow(&self) -> bool {
-        let mut l = self.lexer; // copy: does not disturb parser state
-        loop {
-            let tok = match l.next_token() {
-                Ok(t) => t,
-                Err(_) => return false,
-            };
-            match &tok.kind {
-                TokenKind::RightParen => {
-                    // After `)`, the next token must be `=>`.
-                    let nxt = match l.next_token() {
-                        Ok(t) => t,
-                        Err(_) => return false,
-                    };
-                    return matches!(nxt.kind, TokenKind::Arrow);
-                }
-                TokenKind::Ident(_) | TokenKind::Comma => continue,
-                _ => return false,
-            }
-        }
-    }
-
-    /// Parse the body of an arrow function: either a single expression
-    /// (`x => x + 1`) or a block of expression statements (`() => { a(); b(); }`).
     fn parse_arrow_body(&mut self) -> Result<Expr, ParseError> {
         if self.check(&TokenKind::LeftBrace) {
-            self.advance()?;
+            self.bump();
             let mut stmts = Vec::new();
             while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
                 stmts.push(self.parse_expr()?);
                 if self.check(&TokenKind::Semicolon) {
-                    self.advance()?;
+                    self.bump();
                 }
             }
             self.expect(TokenKind::RightBrace)?;
@@ -595,10 +660,9 @@ impl<'a> Parser<'a> {
         if !self.check(&TokenKind::RightBracket) {
             items.push(self.parse_expr()?);
             while self.check(&TokenKind::Comma) {
-                self.advance()?;
-                // allow trailing comma
+                self.bump();
                 if self.check(&TokenKind::RightBracket) {
-                    break;
+                    break; // trailing comma
                 }
                 items.push(self.parse_expr()?);
             }
@@ -610,13 +674,16 @@ impl<'a> Parser<'a> {
     fn parse_element(&mut self) -> Result<Expr, ParseError> {
         self.expect(TokenKind::Lt)?;
         let tag = self.expect_ident()?;
-        let is_component = Self::is_component_name(&tag);
+        let is_component = tag
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_uppercase())
+            .unwrap_or(false);
         let mut props = Vec::new();
-        // attributes until "/>" or ">"
         loop {
-            match &self.current.kind {
+            match &self.cur().kind {
                 TokenKind::Slash => {
-                    self.advance()?;
+                    self.bump();
                     self.expect(TokenKind::Gt)?;
                     return Ok(Expr::Element(Element {
                         tag,
@@ -626,35 +693,33 @@ impl<'a> Parser<'a> {
                     }));
                 }
                 TokenKind::Gt => {
-                    self.advance()?;
+                    self.bump();
                     break;
                 }
                 TokenKind::Ident(name) => {
                     let pname = name.clone();
-                    self.advance()?;
+                    self.bump();
                     if self.check(&TokenKind::Equals) {
-                        self.advance()?;
-                        // value is `{ expr }` or a string literal
+                        self.bump();
                         if self.check(&TokenKind::LeftBrace) {
-                            self.advance()?;
+                            self.bump();
                             let value = self.parse_expr()?;
                             self.expect(TokenKind::RightBrace)?;
                             props.push(Prop {
                                 name: pname,
                                 value: Some(value),
                             });
-                        } else if let TokenKind::String(s) = &self.current.kind {
+                        } else if let TokenKind::String(s) = &self.cur().kind {
                             let v = s.clone();
-                            self.advance()?;
+                            self.bump();
                             props.push(Prop {
                                 name: pname,
-                                value: Some(Expr::Literal(r2n_ast::lit::Literal::String(v))),
+                                value: Some(Expr::Literal(Literal::String(v))),
                             });
                         } else {
                             return Err(self.err("expected `{...}` or string after `=`"));
                         }
                     } else {
-                        // boolean shorthand
                         props.push(Prop {
                             name: pname,
                             value: None,
@@ -664,39 +729,49 @@ impl<'a> Parser<'a> {
                 _ => return Err(self.err("unexpected token in element attributes")),
             }
         }
-        // children
         let mut children = Vec::new();
         while !self.check(&TokenKind::LtSlash) && !self.check(&TokenKind::Eof) {
             if self.check(&TokenKind::LeftBrace) {
-                self.advance()?;
+                self.bump();
                 let e = self.parse_expr()?;
                 self.expect(TokenKind::RightBrace)?;
                 children.push(e);
             } else if self.check(&TokenKind::Lt) {
                 children.push(self.parse_element()?);
             } else {
-                // JSX text child: everything from the pending token up to the
-                // next `{`/`<` is literal text (e.g. `+1`, `Hello, world`).
-                // Rescan from the pending token's own start offset, then
-                // re-lex so `current` becomes the boundary token.
-                let start = self.current.offset;
-                let text = self.lexer.rescan_jsx_text(start);
-                let text = text.trim().to_string();
+                // JSX text child: slice the source from the pending token's
+                // byte offset up to the next `{` or `<` — the same span
+                // `Lexer::rescan_jsx_text` yields in the strict parser.
+                let start = self.cur().offset;
+                let bytes = self.src.as_bytes();
+                let mut end = start;
+                while end < bytes.len() {
+                    match bytes[end] {
+                        b'{' | b'<' => break,
+                        _ => end += 1,
+                    }
+                }
+                let text = self.src[start..end].trim().to_string();
+                // Skip every token inside the text span.
+                while self.pos < self.tokens.len()
+                    && !matches!(self.tokens[self.pos].kind, TokenKind::Eof)
+                    && self.tokens[self.pos].offset < end
+                {
+                    self.pos += 1;
+                }
                 if text.is_empty() {
-                    // Whitespace-only child: JSX drops it; re-lex and continue.
-                    self.current = self.lexer.next_token()?;
+                    // Whitespace-only child: JSX drops it. The loop above
+                    // may have stopped exactly at `</`; `check` handles it.
                     continue;
                 }
-                children.push(Expr::Literal(r2n_ast::lit::Literal::String(text)));
-                // Refresh the pending token: it may now be `{`, `<`, or `</`.
-                self.current = self.lexer.next_token()?;
+                children.push(Expr::Literal(Literal::String(text)));
             }
         }
         self.expect(TokenKind::LtSlash)?;
         let close = self.expect_ident()?;
         if close != tag {
             return Err(self.err(&format!(
-                "mismatched closing tag: expected {tag}, found {close}"
+                "mismatched closing tag: expected `{tag}`, found `{close}`"
             )));
         }
         self.expect(TokenKind::Gt)?;
