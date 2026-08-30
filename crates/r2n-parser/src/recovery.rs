@@ -311,7 +311,25 @@ impl<'e, 'a> SpanParser<'e, 'a> {
     // ---- expressions (precedence climbing, mirroring parser.rs) ----
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        self.parse_ternary()
+        self.parse_assign()
+    }
+
+    /// `target = value` — right-associative (mirrors parser.rs).
+    fn parse_assign(&mut self) -> Result<Expr, ParseError> {
+        let target = self.parse_ternary()?;
+        if self.check(&TokenKind::Equals) {
+            let is_assignable = matches!(&target, Expr::Ident { .. } | Expr::Member { .. });
+            if !is_assignable {
+                return Err(self.err("assignment target must be an identifier or a member access"));
+            }
+            self.bump();
+            let value = self.parse_assign()?;
+            return Ok(Expr::Assign {
+                target: Box::new(target),
+                value: Box::new(value),
+            });
+        }
+        Ok(target)
     }
 
     fn parse_ternary(&mut self) -> Result<Expr, ParseError> {

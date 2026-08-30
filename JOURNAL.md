@@ -654,3 +654,42 @@ observable property — the structural (path, body) equality was not it
 Slot-stored memo with deps-writeback + ident-numbered callback identity.
 6 tests; suite 120 green; clippy/fmt/audit clean; records updated
 (M1 8/18, 44/106).
+
+## 2026-08-30 — Entry 14: M1-T09 useRef
+
+**PLAN**
+`useRef(initial)` — stable identity, mutable `.current`, persisting without
+re-render. Two prerequisites the subset lacked: assignment expressions
+(`ref.current = x`) and a mutable value box tied to the frame.
+
+**WHAT**
+- Assignment expressions: `Expr::Assign { target, value }` (right-assoc,
+  target = ident | member), parser + recovery twin, lowering to
+  `JsExpr::Assign`, eval (var target: env write; member target: frame slot
+  write — only Ref.current, other member writes are runtime errors).
+- `Value::Ref { slot }` — the ref box; same value every render (slot
+  identity), `.current` reads/writes the frame's `RefValue` slot; writes
+  take NO dirty flag (so no re-render — exactly React's "mutation doesn't
+  trigger render" semantics, asserted: zero patches).
+- THE STRUCTURAL GAP: effect bodies ran against a throwaway `HookFrame`,
+  so any hook handle (ref reads, setters) inside a `useEffect` body failed
+  ("ref slot not found"). `EffectBody` now carries its owning component's
+  frame path and every drain site (`run_effects`/`run_layout_effects`)
+  resolves the real frame. This is a general correctness fix beyond refs.
+
+**WHY**
+Without assignment the hook would be read-only — a fake. The throwaway
+frame was a latent defect: effects could never touch hook handles; refs
+made it visible. React's refs are the cheapest correct answer for
+imperative handles; identity + persistence + no-render is the observable
+contract, all tested.
+
+**OPTIONS**
+- Ref as map `{ current: v }` (like React's object): rejected — maps are
+  values, no slot transit; mutation would need a write-back protocol.
+- `setRef` helper instead of `=`: rejected — not the language's syntax;
+  assignment is the basic JS semantics the language should have anyway.
+
+**CHOSE**
+Real assignment + frame-slot box. Suite 123; records updated
+(M1 9/18, 45/106).

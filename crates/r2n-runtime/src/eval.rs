@@ -70,12 +70,46 @@ pub fn eval(
         JsExpr::Var(name) => env.get(name),
         JsExpr::Get { base, prop } => {
             let v = eval(base, env, frame, host, components, effects)?;
+            // A ref's `.current` reads the frame slot (the box's live value).
+            if let Value::Ref { slot } = &v {
+                if prop == "current" {
+                    return frame
+                        .read_ref(*slot)
+                        .ok_or_else(|| RuntimeError::new("ref slot not found"));
+                }
+            }
             get_prop(&v, prop)
         }
         JsExpr::Index { base, key } => {
             let v = eval(base, env, frame, host, components, effects)?;
             let k = eval(key, env, frame, host, components, effects)?;
             index_prop(&v, &k)
+        }
+        JsExpr::Assign { target, value } => {
+            let v = eval(value, env, frame, host, components, effects)?;
+            match &**target {
+                // `x = v` updates the current scope binding.
+                JsExpr::Var(name) => {
+                    env.define(name, v.clone());
+                    Ok(v)
+                }
+                // `ref.current = v` writes the frame slot (persists across
+                // renders without re-render — React ref semantics). Other
+                // member writes are rejected.
+                JsExpr::Get { base, prop } => {
+                    let b = eval(base, env, frame, host, components, effects)?;
+                    match (&b, prop.as_str()) {
+                        (Value::Ref { slot }, "current") => {
+                            frame.write_ref(*slot, v.clone());
+                            Ok(v)
+                        }
+                        _ => Err(RuntimeError::new(format!("cannot assign to {prop} on {b}"))),
+                    }
+                }
+                other => Err(RuntimeError::new(format!(
+                    "cannot assign to unsupported target {other:?}"
+                ))),
+            }
         }
         JsExpr::Bin { op, left, right } => {
             eval_bin(*op, left, right, env, frame, host, components, effects)
@@ -407,7 +441,9 @@ fn call_var(
             // with the slot; when the deps change or the component unmounts,
             // the cleanup runs BEFORE the next setup (React ordering).
             let cleanup = match args.first() {
-                Some(JsExpr::Closure { body, .. }) => cleanup_of(body, env, layout),
+                Some(JsExpr::Closure { body, .. }) => {
+                    cleanup_of(body, env, layout, frame.path().map(|p| p.to_vec()))
+                }
                 _ => None,
             };
             let (should_run, old_cleanup) = frame.use_effect(deps, cleanup);
@@ -423,6 +459,7 @@ fn call_var(
                         body: (**body).clone(),
                         env: env.clone(),
                         layout,
+                        frame_path: frame.path().map(|p| p.to_vec()),
                     });
                 }
             }
@@ -443,6 +480,14 @@ fn call_var(
             };
             let (state, dispatcher) = frame.use_reducer(rparams, rbody, initial);
             Ok(Value::Array(vec![state, dispatcher]))
+        }
+        "useRef" => {
+            let initial = if let Some(a) = args.first() {
+                eval(a, env, frame, host, components, effects)?
+            } else {
+                Value::Null
+            };
+            Ok(frame.use_ref(initial))
         }
         "useMemo" => {
             let deps = if args.len() >= 2 {
@@ -607,7 +652,12 @@ fn call_filter(
 /// `layout` is the effect's own phase: the cleanup belongs to the SAME
 /// hook slot, so a useLayoutEffect cleanup is a layout cleanup (it must
 /// run in the same queue as its setup, immediately before it).
-fn cleanup_of(body: &JsExpr, env: &Env, layout: bool) -> Option<EffectBody> {
+fn cleanup_of(
+    body: &JsExpr,
+    env: &Env,
+    layout: bool,
+    frame_path: Option<Vec<String>>,
+) -> Option<EffectBody> {
     let cleanup_body = match body {
         // `() => () => cleanup()` — the effect body IS the cleanup arrow.
         JsExpr::Closure { body, .. } => Some((**body).clone()),
@@ -623,6 +673,7 @@ fn cleanup_of(body: &JsExpr, env: &Env, layout: bool) -> Option<EffectBody> {
         body: cleanup_body,
         env: env.clone(),
         layout,
+        frame_path,
     })
 }
 
@@ -633,16 +684,16 @@ fn deps_from_value(v: &Value) -> Vec<Value> {
     }
 }
 
-/// Run a captured effect body in a fresh context (used after commit).
+/// Run a captured effect body (used after commit) against the frame that
+/// owns any hook handles the body references.
 pub fn run_effect_body(
     body: &JsExpr,
     env: &mut Env,
+    frame: &mut HookFrame,
     host: &mut dyn Host,
     components: &[RuntimeComponent],
 ) -> Result<(), RuntimeError> {
-    // Effects don't use hooks in the supported subset; pass a throwaway frame.
-    let mut frame = HookFrame::new();
     let mut effects = Vec::new();
-    eval(body, env, &mut frame, host, components, &mut effects)?;
+    eval(body, env, frame, host, components, &mut effects)?;
     Ok(())
 }

@@ -239,7 +239,12 @@ impl Runtime {
             .frames
             .take_unmounted_cleanups(self.frames.current_pass());
         if !unmount_cleanups.is_empty() {
-            run_effects(&unmount_cleanups, &mut host, &self.template.components)?;
+            run_effects(
+                &unmount_cleanups,
+                &mut self.frames,
+                &mut host,
+                &self.template.components,
+            )?;
         }
         // Handlers are re-derived from the fresh tree each pass; start clean
         // so handlers on removed nodes disappear.
@@ -259,7 +264,12 @@ impl Runtime {
         // matching React's useEffect timing. Layout effects already ran
         // inline during the render walk.
         if !deferred_effects.is_empty() {
-            run_effects(&deferred_effects, &mut host, &self.template.components)?;
+            run_effects(
+                &deferred_effects,
+                &mut self.frames,
+                &mut host,
+                &self.template.components,
+            )?;
         }
         // Frames that went dirty during this pass (setter calls in bindings,
         // effects, or the handler) get scheduled — deduped, FIFO.
@@ -318,7 +328,9 @@ impl Runtime {
         {
             let patches = self.flush()?;
             let mut host = LogHost { log: &mut self.log };
-            run_effects(&effects, &mut host, &self.template.components)?;
+            let frames = &mut self.frames;
+            let components = &self.template.components;
+            run_effects(&effects, frames, &mut host, components)?;
             Ok(patches)
         }
     }
@@ -338,23 +350,26 @@ fn render_root(
     let comp = template.components[root].clone();
     let path = vec!["root".to_string()];
     let pass = frames.current_pass();
-    let frame = frames.get(&path);
-    let unmount_cleanups = frame.begin_render(pass);
+    let unmount_cleanups = frames.get(&path).begin_render(pass);
     let mut env = Env::new();
     let mut effects: Vec<EffectBody> = Vec::new();
-    // Unmount cleanups run immediately: any state destroyed on unmount must
-    // release its resources now (React cleanup-on-unmount ordering).
-    run_effects(&unmount_cleanups, host, &template.components)?;
-    for (name, expr) in &comp.bindings {
-        let v = eval(
-            expr,
-            &mut env,
-            frame,
-            host,
-            &template.components,
-            &mut effects,
-        )?;
-        env.define(name, v);
+    // Unmount cleanups run immediately; the frame borrow ended above.
+    if !unmount_cleanups.is_empty() {
+        run_effects(&unmount_cleanups, frames, host, &template.components)?;
+    }
+    {
+        let frame = frames.get(&path);
+        for (name, expr) in &comp.bindings {
+            let v = eval(
+                expr,
+                &mut env,
+                frame,
+                host,
+                &template.components,
+                &mut effects,
+            )?;
+            env.define(name, v);
+        }
     }
     scopes.insert(path.clone(), InstanceScope { env: env.clone() });
     let node_path = vec!["root".to_string()];
@@ -373,7 +388,7 @@ fn render_root(
     // Layout effects drain SYNCHRONOUSLY here — during the render walk,
     // before the diff runs (pre-commit). Regular effects are deferred:
     // render_once drains them after the diff (post-commit).
-    run_layout_effects(&effects, host, &template.components)?;
+    run_layout_effects(&effects, frames, host, &template.components)?;
     let deferred: Vec<EffectBody> = effects.into_iter().filter(|e| !e.layout).collect();
     Ok((node, deferred))
 }
@@ -570,7 +585,7 @@ fn render_node(
                 let cframe = frames.get(&inst);
                 let unmount_cleanups = cframe.begin_render(pass);
                 if !unmount_cleanups.is_empty() {
-                    run_effects(&unmount_cleanups, host, &template.components)?;
+                    run_effects(&unmount_cleanups, frames, host, &template.components)?;
                 }
                 let mut cenv = Env::new();
                 for (p, v) in comp
@@ -597,7 +612,7 @@ fn render_node(
                 }
                 // Layout effects drain inline (synchronous, pre-commit);
                 // regular effects ride the outer queue to post-diff.
-                run_layout_effects(&ceffects, host, &template.components)?;
+                run_layout_effects(&ceffects, frames, host, &template.components)?;
                 effects.extend(ceffects.into_iter().filter(|e| !e.layout));
                 cenv
             };
@@ -1176,12 +1191,19 @@ fn diff_props(
 
 fn run_effects(
     effects: &[EffectBody],
+    frames: &mut FrameStore,
     host: &mut dyn Host,
     components: &[r2n_ir::runtime::RuntimeComponent],
 ) -> Result<(), RuntimeError> {
     for e in effects {
         let mut env = e.env.clone();
-        run_effect_body(&e.body, &mut env, host, components)?;
+        // Hook handles inside the body (refs, setters) live in the owning
+        // component's frame — resolve it by path, not a throwaway.
+        let frame = match &e.frame_path {
+            Some(p) => frames.get(p),
+            None => unreachable!("every EffectBody carries a frame path"),
+        };
+        run_effect_body(&e.body, &mut env, frame, host, components)?;
     }
     Ok(())
 }
@@ -1189,13 +1211,18 @@ fn run_effects(
 /// Run only the `useLayoutEffect` bodies (synchronous, pre-commit).
 fn run_layout_effects(
     effects: &[EffectBody],
+    frames: &mut FrameStore,
     host: &mut dyn Host,
     components: &[r2n_ir::runtime::RuntimeComponent],
 ) -> Result<(), RuntimeError> {
     let layout: Vec<&EffectBody> = effects.iter().filter(|e| e.layout).collect();
     for e in layout {
         let mut env = e.env.clone();
-        run_effect_body(&e.body, &mut env, host, components)?;
+        let frame = match &e.frame_path {
+            Some(p) => frames.get(p),
+            None => unreachable!("every EffectBody carries a frame path"),
+        };
+        run_effect_body(&e.body, &mut env, frame, host, components)?;
     }
     Ok(())
 }
