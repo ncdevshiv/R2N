@@ -6,6 +6,6 @@ license.workspace = true
 description = "R2N compiler orchestration: parse -> lower -> artifact"
 
 [dependencies]
-r2n-ast = { path = "../r2n-ast" }
-r2n-parser = { path = "../r2n-parser" }
-r2n-ir = { path = "../r2n-ir" }
+r2n-ast = { path = "../r2n-ast" , version = "0.1.0" }
+r2n-parser = { path = "../r2n-parser" , version = "0.1.0" }
+r2n-ir = { path = "../r2n-ir" , version = "0.1.0" }
