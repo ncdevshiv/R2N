@@ -393,7 +393,8 @@ fn call_var(
             let (value, setter) = frame.use_state(initial);
             Ok(Value::Array(vec![value, Value::Setter(setter)]))
         }
-        "useEffect" => {
+        "useEffect" | "useLayoutEffect" => {
+            let layout = name == "useLayoutEffect";
             let deps = if args.len() >= 2 {
                 let d = eval(&args[1], env, frame, host, components, effects)?;
                 Some(deps_from_value(&d))
@@ -406,13 +407,14 @@ fn call_var(
             // with the slot; when the deps change or the component unmounts,
             // the cleanup runs BEFORE the next setup (React ordering).
             let cleanup = match args.first() {
-                Some(JsExpr::Closure { body, .. }) => cleanup_of(body, env),
+                Some(JsExpr::Closure { body, .. }) => cleanup_of(body, env, layout),
                 _ => None,
             };
             let (should_run, old_cleanup) = frame.use_effect(deps, cleanup);
             if should_run {
                 // The previous cleanup (deps changed) runs first, then the
-                // new setup — both after commit, in hook order.
+                // new setup — both in hook order. Layout effects drain
+                // synchronously (pre-commit); regular effects after the diff.
                 if let Some(old) = old_cleanup {
                     effects.push(old);
                 }
@@ -420,6 +422,7 @@ fn call_var(
                     effects.push(EffectBody {
                         body: (**body).clone(),
                         env: env.clone(),
+                        layout,
                     });
                 }
             }
@@ -552,7 +555,10 @@ fn call_filter(
 /// VALUE position (the last statement of a block body, per the `return`
 /// spelling, or the whole body for `() => () => cleanup()`). Returns the
 /// cleanup's own body + the env captured at effect registration.
-fn cleanup_of(body: &JsExpr, env: &Env) -> Option<EffectBody> {
+/// `layout` is the effect's own phase: the cleanup belongs to the SAME
+/// hook slot, so a useLayoutEffect cleanup is a layout cleanup (it must
+/// run in the same queue as its setup, immediately before it).
+fn cleanup_of(body: &JsExpr, env: &Env, layout: bool) -> Option<EffectBody> {
     let cleanup_body = match body {
         // `() => () => cleanup()` — the effect body IS the cleanup arrow.
         JsExpr::Closure { body, .. } => Some((**body).clone()),
@@ -567,6 +573,7 @@ fn cleanup_of(body: &JsExpr, env: &Env) -> Option<EffectBody> {
     Some(EffectBody {
         body: cleanup_body,
         env: env.clone(),
+        layout,
     })
 }
 

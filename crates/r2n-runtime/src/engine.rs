@@ -209,7 +209,7 @@ impl Runtime {
         // Splices are rebuilt every pass: they ride the component-call props
         // (`Value::Children`), so a fresh render re-derives them naturally.
         let mut splices = SpliceMap::new();
-        let tree = render_root(
+        let (tree, deferred_effects) = render_root(
             &self.template,
             &mut self.frames,
             &mut scopes,
@@ -239,6 +239,12 @@ impl Runtime {
         self.handlers = handlers;
         all.extend(patches);
         self.prev = Some(tree);
+        // Regular (deferred) effects drain AFTER the diff — post-commit,
+        // matching React's useEffect timing. Layout effects already ran
+        // inline during the render walk.
+        if !deferred_effects.is_empty() {
+            run_effects(&deferred_effects, &mut host, &self.template.components)?;
+        }
         // Frames that went dirty during this pass (setter calls in bindings,
         // effects, or the handler) get scheduled — deduped, FIFO.
         self.frames.schedule_dirty(&mut self.scheduler);
@@ -287,8 +293,15 @@ impl Runtime {
             &mut effects,
         );
         result?;
-        run_effects(&effects, &mut host, &self.template.components)?;
-        self.flush()
+        // Handler-captured effects drain post-commit: run them after the
+        // flush below (the flush itself re-renders and drains its own).
+        // Scope the host so it does not overlap the flush borrow of `self`.
+        {
+            let patches = self.flush()?;
+            let mut host = LogHost { log: &mut self.log };
+            run_effects(&effects, &mut host, &self.template.components)?;
+            Ok(patches)
+        }
     }
 }
 
@@ -301,7 +314,7 @@ fn render_root(
     scopes: &mut HashMap<Vec<String>, InstanceScope>,
     splices: &mut SpliceMap,
     host: &mut dyn Host,
-) -> Result<RenderedNode, RuntimeError> {
+) -> Result<(RenderedNode, Vec<EffectBody>), RuntimeError> {
     let root = template.root;
     let comp = template.components[root].clone();
     let path = vec!["root".to_string()];
@@ -338,8 +351,12 @@ fn render_root(
         host,
         &mut effects,
     )?;
-    run_effects(&effects, host, &template.components)?;
-    Ok(node)
+    // Layout effects drain SYNCHRONOUSLY here — during the render walk,
+    // before the diff runs (pre-commit). Regular effects are deferred:
+    // render_once drains them after the diff (post-commit).
+    run_layout_effects(&effects, host, &template.components)?;
+    let deferred: Vec<EffectBody> = effects.into_iter().filter(|e| !e.layout).collect();
+    Ok((node, deferred))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -558,7 +575,10 @@ fn render_node(
                     };
                     cenv.define(name, v);
                 }
-                run_effects(&ceffects, host, &template.components)?;
+                // Layout effects drain inline (synchronous, pre-commit);
+                // regular effects ride the outer queue to post-diff.
+                run_layout_effects(&ceffects, host, &template.components)?;
+                effects.extend(ceffects.into_iter().filter(|e| !e.layout));
                 cenv
             };
             // Save this instance's scope so handlers dispatched later run in
@@ -1140,6 +1160,20 @@ fn run_effects(
     components: &[r2n_ir::runtime::RuntimeComponent],
 ) -> Result<(), RuntimeError> {
     for e in effects {
+        let mut env = e.env.clone();
+        run_effect_body(&e.body, &mut env, host, components)?;
+    }
+    Ok(())
+}
+
+/// Run only the `useLayoutEffect` bodies (synchronous, pre-commit).
+fn run_layout_effects(
+    effects: &[EffectBody],
+    host: &mut dyn Host,
+    components: &[r2n_ir::runtime::RuntimeComponent],
+) -> Result<(), RuntimeError> {
+    let layout: Vec<&EffectBody> = effects.iter().filter(|e| e.layout).collect();
+    for e in layout {
         let mut env = e.env.clone();
         run_effect_body(&e.body, &mut env, host, components)?;
     }

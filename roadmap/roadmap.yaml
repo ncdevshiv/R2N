@@ -269,7 +269,7 @@ phases:
       - id: "M1-T07"
         title: "useLayoutEffect — synchronous pre-commit ordering"
         priority: "P1"
-        done: false
+        done: true
       - id: "M1-T08"
         title: "useMemo / useCallback with dependency-tracked caching"
         priority: "P1"
