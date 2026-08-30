@@ -317,3 +317,58 @@ the artifact rule (nodes are data; the runtime never sees source).
 **CHOSE**
 Children as first-class ABI data: lower early, splice late, close over the
 parent. Records updated in the same PR (M1 1/18 in progress, 37/106).
+
+## 2026-08-30 — Entry 7: M1-T02 Keys as First-Class Identity
+
+**PLAN**
+React keys on ANY child (not just `.map` list items): an author-provided
+`key` is the child's reconciliation identity — a keyed child that changes
+position MOVES (same node id, same component instance, hook state intact)
+instead of being destroyed and recreated.
+
+**WHAT**
+- `static_key_expr(node)`: peeks the `key` prop expression off a static
+  child — host element, component call, or LOOKED THROUGH a conditional
+  (a keyed child rendered by either ternary branch is the same child).
+- Host-children loop: the key is evaluated in the PARENT's scope (where the
+  element is written — React evaluates keys at element-creation time) and
+  becomes the child's identity segment `k:{value}`; unkeyed siblings keep
+  positional `#i`. The `If` arm passes the keyed path through AS-IS (the
+  sibling loop already appended the key segment; appending again would
+  double it and break id_map agreement between render and diff).
+- Component instances keyed by their element key follow the key across
+  position changes — the decisive test moves a keyed `<Tick/>` from slot 0
+  to slot 2 past a static sibling and its `useState` survives (101, not
+  re-initialized 100), with `Move` patches and no Remove/Create for it.
+- `key` never reaches renderers (both diff paths already stripped it; now
+  test-enforced).
+- PRE-EXISTING RECONCILER BUG found and fixed: `diff_children`'s Move
+  patches used SURVIVOR-RELATIVE indices as the move target — wrong
+  whenever new nodes are created interleaved among moved survivors (the
+  moved child lands at the wrong index; the tree ends up misordered).
+  Moves now use the child's ABSOLUTE position in the new list, while the
+  relative-order comparison still decides WHETHER to move (removals alone
+  must not trigger Moves).
+- 8 tests (tests/keys.rs): identity across state change, reorder via Move,
+  genuine slot-swap with state survival, key-stripping at the renderer,
+  mixed keyed/positional siblings, keys through children splices,
+  duplicate keys render both without panic.
+
+**WHY**
+Keys are React's core reconciliation tool; without them on static children,
+any conditional re-layout silently re-initializes component state (the
+exact bug class React's docs warn about). The strengthened decisive test
+was needed because my first passing version never actually moved the child.
+
+**OPTIONS**
+- Evaluate the key INSIDE the child's render: rejected — identity must be
+  known before the child's node path is built; a post-hoc key breaks the
+  render/diff path agreement (learned the hard way: double-appended key
+  segments caused Remove+Create despite correct identity).
+- Warn on duplicate keys (React behavior): deferred — needs a diagnostics
+  channel from runtime to compiler; tracked for the conformance suite (M1-T17).
+
+**CHOSE**
+Keys as position-free identity everywhere: static children, conditionals,
+and (already) list items — one rule, ADR-010 semantics, proven by a real
+slot-swap. Records updated in the same PR (M1 2/18, 38/106).
