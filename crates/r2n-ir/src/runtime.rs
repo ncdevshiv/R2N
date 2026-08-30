@@ -34,16 +34,48 @@ pub struct RuntimeComponent {
     pub body: ReactNode,
 }
 
+/// Artifact format version. Bumped on any breaking change to the serialized
+/// shape of `RuntimeTemplate` — a runtime that receives an artifact with an
+/// unknown major version must reject it (ABI rule, RUNTIME_ABI spec).
+pub const ARTIFACT_FORMAT_VERSION: u32 = 1;
+
 /// The whole compiled program: a table of components plus the root index.
+/// Carries an artifact manifest: format version + generator version, so any
+/// consumer can verify compatibility before executing (stamped by the
+/// compiler; round-trips through JSON with the artifact).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RuntimeTemplate {
     pub components: Vec<RuntimeComponent>,
     pub root: usize,
+    /// Artifact manifest (M0.3-T09): format + generator stamps.
+    #[serde(default)]
+    pub manifest: ArtifactManifest,
+}
+
+/// Version stamps every compiled artifact carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ArtifactManifest {
+    /// Serialization format major version (see ARTIFACT_FORMAT_VERSION).
+    pub format_version: u32,
+    /// Version of the compiler that produced this artifact.
+    #[serde(default)]
+    pub compiler_version: (u32, u32, u32),
 }
 
 impl RuntimeTemplate {
     pub fn new() -> Self {
-        Self::default()
+        let mut parts: Vec<u32> = env!("CARGO_PKG_VERSION")
+            .split('.')
+            .map(|p| p.parse().unwrap_or(0))
+            .collect();
+        parts.resize(3, 0);
+        Self {
+            manifest: ArtifactManifest {
+                format_version: ARTIFACT_FORMAT_VERSION,
+                compiler_version: (parts[0], parts[1], parts[2]),
+            },
+            ..Self::default()
+        }
     }
 
     pub fn root_component(&self) -> &RuntimeComponent {

@@ -233,7 +233,7 @@ phases:
       - id: "M0.3-T09"
         title: "IR snapshot tests + ir_version / language_version stamping"
         priority: "P1"
-        done: false
+        done: true
 
   - id: "M1"
     name: "React Compatibility — Level 1"

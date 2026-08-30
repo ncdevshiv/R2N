@@ -1,7 +1,7 @@
 # R2N — Complete Execution Checklist
 
 > **R2N — React to Native** — Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime
-> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **34/106** tasks done (32%).
+> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **35/106** tasks done (33%).
 > Audit basis: every task was verified against the actual implementation and test suite (30 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
 
 **How to use:** check items off in the interactive tracker ([index.html](index.html)) — it saves live in your browser. This file, [roadmap.yaml](roadmap.yaml), and [roadmap.toml](roadmap.toml) are the portable record; update them when a milestone closes.
@@ -53,7 +53,7 @@ _The core reactive loop: event → state mutation → dirty component → schedu
 
 ## M0.3 — Compiler Frontend — JS/JSX → IR
 
-`IN PROGRESS` · weeks 4–7 · progress **7/9** (78%)
+`IN PROGRESS` · weeks 4–7 · progress **8/9** (89%)
 
 _Stop hand-building IR. Lexer → parser → AST → JS IR → React IR, and the first genuinely interesting transformation: compiling Counter from real source, including event-handler extraction._
 
@@ -65,7 +65,7 @@ _Stop hand-building IR. Lexer → parser → AST → JS IR → React IR, and the
 - [x] **P0** — compile(source) → RuntimeTemplate artifact API (serde JSON) — **remaining**: format/ABI version stamps in the artifact
 - [x] **P0** — Counter compiled from real source E2E — no manually constructed IR anywhere in tests
 - [ ] **P1** — Diagnostics: spanned errors exist (line:col everywhere); friendly multi-error reporting remains
-- [ ] **P1** — IR snapshot tests + ir_version / language_version stamping — remains
+- [x] **P1** — IR determinism (snapshot foundation) + artifact manifest stamps: format_version + compiler_version, JSON round-trip verified
 
 ## M1 — React Compatibility — Level 1
 

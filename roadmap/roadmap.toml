@@ -329,7 +329,7 @@ done = false
 id = "M0.3-T09"
 title = "IR snapshot tests + ir_version / language_version stamping"
 priority = "P1"
-done = false
+done = true
 
 [[phases]]
 id = "M1"
