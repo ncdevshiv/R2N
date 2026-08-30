@@ -27,6 +27,10 @@ pub enum LowerError {
     NonRenderableReturn(String),
     /// A `list.map(...)` with the wrong shape was used in child position.
     InvalidListMap(String),
+    /// A `<>` fragment was given an attribute other than `key` (React
+    /// fragments accept only `key`; other attributes would be silently
+    /// meaningless).
+    InvalidFragmentProp(String),
 }
 
 impl std::fmt::Display for LowerError {
@@ -35,6 +39,9 @@ impl std::fmt::Display for LowerError {
             LowerError::UnknownComponent(n) => write!(f, "unknown component '{n}'"),
             LowerError::NonRenderableReturn(s) => write!(f, "non-renderable return: {s}"),
             LowerError::InvalidListMap(s) => write!(f, "invalid list .map(): {s}"),
+            LowerError::InvalidFragmentProp(n) => {
+                write!(f, "fragment `<>` accepts only `key`, got `{n}`")
+            }
         }
     }
 }
@@ -284,6 +291,28 @@ fn lower_renderable(expr: &Expr, index: &HashMap<String, usize>) -> Result<React
 }
 
 fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNode, LowerError> {
+    // Fragment shorthand `<>...</>` (parsed as an Element with an empty tag):
+    // a group of children with no host element of its own. React fragments
+    // accept only a `key`; any other attribute is an error, not a silent drop.
+    if e.tag.is_empty() {
+        let mut key = None;
+        for p in &e.props {
+            if p.name == "key" {
+                key = Some(match &p.value {
+                    Some(v) => lower_expr(v, index)?,
+                    None => JsExpr::Lit(r2n_ast::lit::Literal::Bool(true)),
+                });
+            } else {
+                return Err(LowerError::InvalidFragmentProp(p.name.clone()));
+            }
+        }
+        let mut children = Vec::with_capacity(e.children.len());
+        for child in &e.children {
+            children.push(lower_child(child, index)?);
+        }
+        return Ok(ReactNode::Fragment { key, children });
+    }
+
     // Component element? (uppercase tag)
     if e.is_component {
         let comp_idx = *index
@@ -400,6 +429,9 @@ fn try_lower_list(
                 JsExpr::Var("$item".to_string())
             }
         }
+        // A fragment item carries its key in the Fragment node (the only
+        // prop fragments accept). Substitution already rewrote item vars.
+        ReactNode::Fragment { key: Some(k), .. } => k.clone(),
         _ => JsExpr::Var("$item".to_string()),
     };
     Ok(Some(ReactNode::List {
@@ -504,6 +536,13 @@ fn subst_node(n: ReactNode, from: &str, to: &str) -> ReactNode {
         },
         ReactNode::Text(e) => ReactNode::Text(subst_expr(e, from, to)),
         ReactNode::Children => ReactNode::Children,
+        ReactNode::Fragment { key, children } => ReactNode::Fragment {
+            key: key.map(|k| subst_expr(k, from, to)),
+            children: children
+                .into_iter()
+                .map(|c| subst_node(c, from, to))
+                .collect(),
+        },
     }
 }
 
@@ -603,6 +642,14 @@ fn collect_free_node(
         // The children splice point is a runtime concern; `children` itself
         // is a param/prop the component received (already counted if bound).
         ReactNode::Children => {}
+        ReactNode::Fragment { key, children } => {
+            if let Some(k) = key {
+                collect_free(k, bound, out);
+            }
+            for c in children {
+                collect_free_node(c, bound, out);
+            }
+        }
     }
 }
 

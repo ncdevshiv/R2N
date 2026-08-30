@@ -372,3 +372,64 @@ was needed because my first passing version never actually moved the child.
 Keys as position-free identity everywhere: static children, conditionals,
 and (already) list items — one rule, ADR-010 semantics, proven by a real
 slot-swap. Records updated in the same PR (M1 2/18, 38/106).
+
+## 2026-08-30 — Entry 8: M1-T03 Fragments
+
+**PLAN**
+The `<>...</>` shorthand: a group of children with no host element, exactly
+React's Fragment. The runtime already had a transparent fragment mechanism
+(internal `\0frag` tag used by lists and children splices) — the work is
+the JSX syntax, the IR node, and reconciliation correctness when fragments
+become SIBLINGS.
+
+**WHAT**
+- Parser: `<>` / `</>` parse as an Element with an empty tag (the only shape
+  the existing JSX machinery threads uniformly through children parsing,
+  text rescanning, and self-closing). Closing `</>` needs no tag match.
+- IR: `ReactNode::Fragment { key, children }` (key is the only prop React
+  fragments accept; `LowerError::InvalidFragmentProp` guards it — currently
+  unreachable through the grammar because shorthand fragments take no
+  attributes, matching JSX/Babel, but enforced for future named-fragment
+  syntax). subst_node / collect_free_node / try_lower_list (fragment list
+  items contribute their key to the List) all handle it.
+- Runtime: the Fragment arm renders children and returns the transparent
+  FRAGMENT host — the parent's children loop splices them in place, so
+  siblings flow around fragments and nested fragments flatten transitively.
+
+**BUGS FOUND BY THE ACCEPTANCE TESTS**
+1. Fragment-child keys collided with the parent's positional keys: spliced
+   fragment children used bare `#i`, and the parent's button at IR index 1
+   is ALSO `#1` — the keyed old/new maps aliased, so a ternary flip left
+   STALE nodes in the tree and a pure text update churned a fragment
+   sibling through Remove+Create+Move. Fix: fragment-child keys are scoped
+   by the fragment's own path segment (`then:0`, `#0:1`, `a:2`...) — unique
+   per fragment instance, stable across re-renders.
+2. PRE-EXISTING diff bug: flat renderer positions assumed one slot per
+   sibling (`index + i` for fragment children). With MULTIPLE fragment
+   siblings (fragment `.map` items), later fragments' children landed at
+   wrong Create indices and the rendered order came out grouped instead of
+   interleaved. Fix: `flat_positions()` — a fragment sibling occupies
+   `children.len()` flat slots; diff's Create indices and Move targets use
+   flat positions everywhere.
+
+**WHY**
+Fragments are the last structural JSX primitive before the hook set; the
+sibling-collision bug class (keyed maps aliasing on spliced children)
+would have resurfaced for any future splicing feature, so the scoped-key
+rule is the load-bearing decision. Flat positions make the diff's index
+arithmetic honest about the tree shape the renderer actually sees.
+
+**OPTIONS**
+- Renumber keys at splice time (rewrite spliced children's keys to continue
+  the parent's numbering): rejected — recursive key rewriting would clobber
+  the stable keyed identity of nested list items.
+- Fragment items move as a unit (React moves the group): NOT DONE — our
+  Move patch is single-node and fragment hosts have no renderer node; the
+  id lookup misses and the move is skipped (children move individually).
+  Documented limitation, deferred to the M1-T17 conformance hardening.
+
+**CHOSE**
+Scoped keys + flat positions: one rule each, proven by 9 tests (no-host
+render, siblings, nested flattening, ternary branches, list-item
+interleaving + keyed survival, children-splice composition, self-closing,
+positional diffing). 89 green; records updated (M1 3/18, 39/106).

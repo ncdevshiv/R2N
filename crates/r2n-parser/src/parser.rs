@@ -609,8 +609,15 @@ impl<'a> Parser<'a> {
 
     fn parse_element(&mut self) -> Result<Expr, ParseError> {
         self.expect(TokenKind::Lt)?;
-        let tag = self.expect_ident()?;
-        let is_component = Self::is_component_name(&tag);
+        // Fragment shorthand `<>...</>`: no tag. Modeled as an Element with an
+        // empty tag (the lowering turns it into a React Fragment node).
+        let is_fragment = self.check(&TokenKind::Gt);
+        let tag = if is_fragment {
+            String::new()
+        } else {
+            self.expect_ident()?
+        };
+        let is_component = !is_fragment && Self::is_component_name(&tag);
         let mut props = Vec::new();
         // attributes until "/>" or ">"
         loop {
@@ -693,13 +700,18 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::LtSlash)?;
-        let close = self.expect_ident()?;
-        if close != tag {
-            return Err(self.err(&format!(
-                "mismatched closing tag: expected {tag}, found {close}"
-            )));
+        if is_fragment {
+            // `</>` — the fragment close has no tag name.
+            self.expect(TokenKind::Gt)?;
+        } else {
+            let close = self.expect_ident()?;
+            if close != tag {
+                return Err(self.err(&format!(
+                    "mismatched closing tag: expected {tag}, found {close}"
+                )));
+            }
+            self.expect(TokenKind::Gt)?;
         }
-        self.expect(TokenKind::Gt)?;
         Ok(Expr::Element(Element {
             tag,
             is_component,
