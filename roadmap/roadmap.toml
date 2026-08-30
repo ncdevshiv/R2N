@@ -350,7 +350,7 @@ done = true
 id = "M1-T02"
 title = "Keys as first-class identity + keyed reconciliation (move vs recreate)"
 priority = "P0"
-done = false
+done = true
 
 [[phases.tasks]]
 id = "M1-T03"

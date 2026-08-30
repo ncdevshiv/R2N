@@ -1,7 +1,7 @@
 # R2N — Complete Execution Checklist
 
 > **R2N — React to Native** — Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime
-> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **37/106** tasks done (35%).
+> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **38/106** tasks done (36%).
 > Audit basis: every task was verified against the actual implementation and test suite (54 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
 
 **How to use:** check items off in the interactive tracker ([index.html](index.html)) — it saves live in your browser. This file, [roadmap.yaml](roadmap.yaml), and [roadmap.toml](roadmap.toml) are the portable record; update them when a milestone closes.
@@ -69,12 +69,12 @@ _Stop hand-building IR. Lexer → parser → AST → JS IR → React IR, and the
 
 ## M1 — React Compatibility — Level 1
 
-`IN PROGRESS` · weeks 7–12 · progress **1/18** (6%)
+`IN PROGRESS` · weeks 7–12 · progress **2/18** (11%)
 
 _Behavioral compatibility with React core: full hook set, keys, context, effects, class components, error boundaries, portals, Suspense — validated by a behavioral conformance suite, not API presence._
 
 - [x] **P0** — Props & children propagation through component calls (`Value::Children` pre-lowered nodes ride the `children` prop; `ReactNode::Children` splice point; children close over the PARENT's scope — composition by reference; re-renders re-derive splices from fresh props, minimal SetText patches; tests/props_children.rs, 8 tests)
-- [ ] **P0** — Keys as first-class identity + keyed reconciliation (move vs recreate)
+- [x] **P0** — Keys as first-class identity + keyed reconciliation (move vs recreate): author `key` on any static child (host or component, incl. through conditional branches) becomes `k:{value}` identity evaluated in the parent scope; a keyed child that changes position emits `Move`, never Remove+Create, and its component instance (hook state) follows the key — proven by a genuine slot-swap test; `key` never reaches renderers; `diff_children` Move indices fixed from survivor-relative to absolute (tests/keys.rs, 8 tests)
 - [ ] **P0** — Fragments
 - [ ] **P0** — Conditional rendering & lists (map → keyed children)
 - [ ] **P0** — useReducer — reducer IR + dispatch actions

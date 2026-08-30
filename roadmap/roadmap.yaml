@@ -249,7 +249,7 @@ phases:
       - id: "M1-T02"
         title: "Keys as first-class identity + keyed reconciliation (move vs recreate)"
         priority: "P0"
-        done: false
+        done: true
       - id: "M1-T03"
         title: "Fragments"
         priority: "P0"

@@ -346,10 +346,24 @@ fn render_node(
             }
             let mut rchildren: Vec<RenderedNode> = Vec::new();
             for (i, c) in children.iter().enumerate() {
-                // The node path (reconciliation identity) extends per child;
-                // the instance path stays the owning component's. Static
-                // children are position-keyed ('#i' — see child_path).
-                let child_node = child_path(node_path, i, &format!("#{i}"));
+                // Reconciliation identity (ADR-010): an author-provided `key`
+                // is the child's identity; without one, identity is position
+                // ('#i'). The key evaluates in the PARENT's scope — where the
+                // element is written — exactly like React evaluates it at
+                // element-creation time. A keyed child keeps its node id (and
+                // its component instance, so hook state follows) across
+                // reorders: reconciliation emits Move, never Remove+Create.
+                let key_seg = match static_key_expr(c) {
+                    Some(expr) => {
+                        let v = {
+                            let frame = frames.get(inst_path);
+                            eval(expr, env, frame, host, &template.components, effects)?
+                        };
+                        format!("k:{}", v.display())
+                    }
+                    None => format!("#{i}"),
+                };
+                let child_node = child_path(node_path, i, &key_seg);
                 let rn = render_node(
                     c,
                     inst_path,
@@ -379,10 +393,18 @@ fn render_node(
                         continue;
                     }
                 }
-                // Static (non-list) siblings have no author-provided key,
-                // so their identity IS their position: '#i'.
+                // A keyed child under a flipped conditional is STILL the same
+                // child (React semantics): its author key overrides the
+                // positional sibling identity, so a branch flip preserves the
+                // node id and the diff is a Move, not Remove+Create.
+                let key_seg = match &rn {
+                    other if static_key_expr(c).is_some() => other.key().to_string(),
+                    _ => key_seg,
+                };
+                // Static (non-list) siblings: identity is the key when the
+                // author provided one, else the position ('#i').
                 let mut rn = rn;
-                set_key(&mut rn, &format!("#{i}"));
+                set_key(&mut rn, &key_seg);
                 rchildren.push(rn);
             }
             RenderedNode::Host {
@@ -506,8 +528,25 @@ fn render_node(
                 eval(cond, env, frame, host, &template.components, effects)?
             };
             let branch = if c.is_truthy() { then } else { else_ };
-            let key = if c.is_truthy() { "then" } else { "else" };
-            let child_node = child_path(node_path, 0, key);
+            let branch_key = if c.is_truthy() { "then" } else { "else" };
+            // An author-provided key on the branch child is its identity
+            // (and must SURVIVE the branch flip — the same keyed child
+            // rendered by the other branch is still the same child). The
+            // positional then/else marker is only for unkeyed children.
+            // The keyed child's path is node_path AS-IS: the parent's
+            // children loop already appended the key segment (identity is
+            // position-free), so appending here would double it and break
+            // id_map matching between render and diff.
+            let (child_node, key_seg) = match static_key_expr(branch) {
+                Some(expr) => {
+                    let v = {
+                        let frame = frames.get(inst_path);
+                        eval(expr, env, frame, host, &template.components, effects)?
+                    };
+                    (node_path.to_vec(), format!("k:{}", v.display()))
+                }
+                None => (child_path(node_path, 0, branch_key), branch_key.to_string()),
+            };
             let mut rn = render_node(
                 branch,
                 inst_path,
@@ -520,7 +559,7 @@ fn render_node(
                 host,
                 effects,
             )?;
-            set_key(&mut rn, key);
+            set_key(&mut rn, &key_seg);
             rn
         }
         ReactNode::List {
@@ -826,27 +865,37 @@ fn diff_children(
         }
     }
 
-    // Moves (only when order of surviving keys changes).
+    // Moves: a surviving child whose RELATIVE order changed needs a Move
+    // (removals alone shift siblings — that must not trigger Moves). The
+    // Move's index is the child's ABSOLUTE position in the new list:
+    // survivor-relative indices diverge from absolute ones when new nodes
+    // are created interleaved among moved survivors.
     let surviving_old: Vec<&String> = old_order
         .iter()
-        .filter(|k| new_children.iter().any(|c| c.key() == *k))
+        .filter(|k| new_children.iter().any(|c| c.key() == **k))
         .collect();
     let surviving_new: Vec<String> = new_children
         .iter()
         .map(|c| c.key().to_string())
         .filter(|k| old_order.contains(k))
         .collect();
-    for (new_i, key) in surviving_new.iter().enumerate() {
-        let old_i = surviving_old
+    let new_pos: HashMap<&str, usize> = new_children
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.key(), i))
+        .collect();
+    for (rel_new_i, key) in surviving_new.iter().enumerate() {
+        let rel_old_i = surviving_old
             .iter()
             .position(|k| *k == key)
-            .unwrap_or(new_i);
-        if old_i != new_i {
-            if let Some(id) = next_id_map.get(&child_path(path, new_i, key)) {
+            .unwrap_or(rel_new_i);
+        if rel_old_i != rel_new_i {
+            let abs_new_i = new_pos.get(key.as_str()).copied().unwrap_or(rel_new_i);
+            if let Some(id) = next_id_map.get(&child_path(path, abs_new_i, key)) {
                 patches.push(Patch::Move {
                     id: *id,
                     parent: parent_id,
-                    index: new_i,
+                    index: abs_new_i,
                 });
             }
         }
@@ -879,8 +928,27 @@ impl RenderedNode {
     }
 }
 
+/// The `key` prop expression of a static child (host element, component
+/// call, or — looked through — a conditional's keyed branch), if the author
+/// provided one. List items are excluded: their keys are handled by the
+/// `List` arm (which owns item identity). The runtime may use this to key
+/// reconciliation BEFORE rendering the child (identity must be known when
+/// the child's node path is built, not after) — for an `If`, the key of the
+/// keyed branch child is the identity of whichever branch renders, so the
+/// same keyed child survives a branch flip.
+fn static_key_expr(node: &ReactNode) -> Option<&r2n_ir::js::JsExpr> {
+    match node {
+        ReactNode::Host { props, .. } | ReactNode::Component { props, .. } => {
+            props.iter().find(|(n, _)| n == "key").map(|(_, e)| e)
+        }
+        ReactNode::If { then, else_, .. } => {
+            static_key_expr(then).or_else(|| static_key_expr(else_))
+        }
+        _ => None,
+    }
+}
+
 fn child_path(parent: &[String], index: usize, key: &str) -> Vec<String> {
-    // Node identity (ADR-010), with React's exact semantics:
     // * An author-provided KEY (list items) is identity: the node keeps its
     //   id across renders even when it moves — position is not encoded.
     // * A static sibling (no key) is identified by POSITION: `#i`. (Two
