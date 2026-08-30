@@ -8,8 +8,8 @@ description = "Zero-JS R2N runtime: evaluation, hooks, reconciliation, patch str
 # Architecture rule (M0.1 guard): the runtime consumes ONLY the compiled
 # Runtime IR — it must never depend on the parser, AST, or compiler.
 [dependencies]
-r2n-ir = { path = "../r2n-ir" }
+r2n-ir = { path = "../r2n-ir" , version = "0.1.0" }
 
 [dev-dependencies]
-r2n-compiler = { path = "../r2n-compiler" }
-r2n-renderer-memory = { path = "../r2n-renderer-memory" }
+r2n-compiler = { path = "../r2n-compiler" , version = "0.1.0" }
+r2n-renderer-memory = { path = "../r2n-renderer-memory" , version = "0.1.0" }

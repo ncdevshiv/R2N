@@ -6,7 +6,7 @@ license.workspace = true
 description = "In-memory renderer for the R2N runtime (consumes the Patch stream)"
 
 [dependencies]
-r2n-runtime = { path = "../r2n-runtime" }
+r2n-runtime = { path = "../r2n-runtime" , version = "0.1.0" }
 
 [dev-dependencies]
-r2n-compiler = { path = "../r2n-compiler" }
+r2n-compiler = { path = "../r2n-compiler" , version = "0.1.0" }

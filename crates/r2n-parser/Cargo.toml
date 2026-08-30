@@ -6,4 +6,4 @@ license.workspace = true
 description = "Real recursive-descent lexer + parser for the R2N source subset"
 
 [dependencies]
-r2n-ast = { path = "../r2n-ast" }
+r2n-ast = { path = "../r2n-ast" , version = "0.1.0" }

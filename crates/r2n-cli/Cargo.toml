@@ -10,7 +10,7 @@ name = "r2n"
 path = "src/main.rs"
 
 [dependencies]
-r2n-compiler = { path = "../r2n-compiler" }
-r2n-ir = { path = "../r2n-ir" }
-r2n-runtime = { path = "../r2n-runtime" }
-r2n-renderer-memory = { path = "../r2n-renderer-memory" }
+r2n-compiler = { path = "../r2n-compiler" , version = "0.1.0" }
+r2n-ir = { path = "../r2n-ir" , version = "0.1.0" }
+r2n-runtime = { path = "../r2n-runtime" , version = "0.1.0" }
+r2n-renderer-memory = { path = "../r2n-renderer-memory" , version = "0.1.0" }
