@@ -341,7 +341,7 @@ phases:
       - id: "M2-T05"
         title: "Equality & coercion — == vs ===, ToPrimitive, ToString/ToNumber"
         priority: "P0"
-        done: false
+        done: true
       - id: "M2-T06"
         title: "Exceptions — try/catch/finally propagation across calls"
         priority: "P0"

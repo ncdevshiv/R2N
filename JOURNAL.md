@@ -1157,3 +1157,51 @@ is.
 **CHOSE**
 Value-realm classes + this-binding at call. 5 tests; suite 186; records
 (M2 4/15, 58/106).
+
+## 2026-08-31 — Entry 27: M2-T05 Equality & Coercion (== vs ===, ToPrimitive)
+
+**PLAN**
+values_equal was a naive same-variant check — `==` had no ECMA ladder and
+`===` did not exist as an operator. T05 brings real IsLooselyEqual /
+IsStrictlyEqual through the full stack (lexer -> parser -> AST -> IR ->
+runtime) plus ToPrimitive.
+
+**WHAT**
+- Lexer: `EqEqEq`/`BangEqEq` tokens; try_two_char now consumes 3 chars
+  when it matched a 3-char operator (width keyed off the matched kind,
+  not lookahead — `<==` cannot mis-lex).
+- AST `BinOp::StrictEq/StrictNeq`; both parsers' equality precedence
+  chain handles them; IR `JsBinOp::StrictEq/StrictNeq` + lowering.
+- Runtime `strictly_equal` (ECMA 7.2.15): no coercion, NaN !== NaN,
+  -0 === 0, Symbol by id, objects by Rc::ptr_eq, functions by captured-
+  env pointer.
+- Runtime `loosely_equal` (ECMA 7.2.14): null == undefined; number<->string
+  via ToNumber; boolean coerces to number FIRST (true == "2" is false —
+  bool->1, then 1 vs "2"->2); BigInt vs string via StringToBigInt (failure
+  = false, not error) and vs number mathematically (finite, integral).
+- `to_primitive` = OrdinaryToPrimitive: callable valueOf, then toString
+  (method result must be non-object or we continue/raise); arrays convert
+  as join(","), null/undefined elements -> "". A methodless object RAISES
+  TypeError — exactly what `Object.create(null) == 1` does in ECMA (our
+  plain objects are null-prototype, so the paths coincide).
+- Symbol/primitive and function/primitive pairs fall through to false (no
+  ECMA step applies) — not errors.
+- DOCUMENTED DIVERGENCE: Array/Map compare structurally (they are
+  value-copied Vec/BTreeMap in this runtime; identity arrives with the
+  object-unification work). Recorded in the checklist note.
+
+**WHY**
+`===` vs `==` is among the most-loaded semantics in real JS; getting the
+ladder wrong silently corrupts conditionals (e.g. "3" === 3 guarding a
+render branch must be false, "1" == 1 must be true). Coercion correctness
+also pins ToNumber/ToString/ToBoolean across the value model from T01.
+
+**OPTIONS**
+- Represent arrays/maps as Objects to get free identity: rejected — a
+  representation overhaul mid-milestone; the divergence is documented and
+  narrow (plain arrays), while the ECMA ladder is fully real.
+- Raise on symbol == primitive: rejected — ECMA says false, not TypeError.
+
+**CHOSE**
+Full ECMA ladder with identity where the representation supports it, one
+documented divergence. 10 tests; suite 196; records (M2 5/15, 59/106).

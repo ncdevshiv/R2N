@@ -454,6 +454,8 @@ impl<'e, 'a> SpanParser<'e, 'a> {
             let op = match &self.cur().kind {
                 TokenKind::EqEq => BinOp::Eq,
                 TokenKind::BangEq => BinOp::Neq,
+                TokenKind::EqEqEq => BinOp::StrictEq,
+                TokenKind::BangEqEq => BinOp::StrictNeq,
                 _ => break,
             };
             self.bump();

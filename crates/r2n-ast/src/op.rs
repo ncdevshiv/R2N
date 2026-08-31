@@ -10,6 +10,10 @@ pub enum BinOp {
     Mod,
     Eq,
     Neq,
+    /// `===` (strict equality — no coercion, objects by identity).
+    StrictEq,
+    /// `!==`
+    StrictNeq,
     Lt,
     Gt,
     Le,
@@ -28,7 +32,9 @@ impl BinOp {
             BinOp::Div => "/",
             BinOp::Mod => "%",
             BinOp::Eq => "==",
+            BinOp::StrictEq => "===",
             BinOp::Neq => "!=",
+            BinOp::StrictNeq => "!==",
             BinOp::Lt => "<",
             BinOp::Gt => ">",
             BinOp::Le => "<=",

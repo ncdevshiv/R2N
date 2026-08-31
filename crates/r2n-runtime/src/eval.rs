@@ -529,8 +529,18 @@ fn eval_bin(
         Mul => num_op(&l, &r, |a, b| a * b)?,
         Div => num_op(&l, &r, |a, b| a / b)?,
         Mod => num_op(&l, &r, |a, b| a % b)?,
-        Eq => return Ok(Value::Bool(values_equal(&l, &r))),
-        Neq => return Ok(Value::Bool(!values_equal(&l, &r))),
+        Eq => {
+            return Ok(Value::Bool(loosely_equal(
+                &l, &r, env, frame, host, components, effects,
+            )?))
+        }
+        Neq => {
+            return Ok(Value::Bool(!loosely_equal(
+                &l, &r, env, frame, host, components, effects,
+            )?))
+        }
+        StrictEq => return Ok(Value::Bool(strictly_equal(&l, &r))),
+        StrictNeq => return Ok(Value::Bool(!strictly_equal(&l, &r))),
         Lt => return Ok(Value::Bool(ord(&l, &r)? < std::cmp::Ordering::Equal)),
         Gt => return Ok(Value::Bool(ord(&l, &r)? > std::cmp::Ordering::Equal)),
         Le => return Ok(Value::Bool(ord(&l, &r)? != std::cmp::Ordering::Greater)),
@@ -569,16 +579,162 @@ fn ord(l: &Value, r: &Value) -> Result<std::cmp::Ordering, RuntimeError> {
     }
 }
 
-fn values_equal(a: &Value, b: &Value) -> bool {
+/// ECMA-262 section 7.2.15 IsStrictlyEqual (`===`). No coercion: operands of
+/// different types are never equal, `NaN` is not equal to itself, and
+/// reference types (objects, functions) compare by identity. `Array`/`Map`
+/// are copied on read in this runtime (plain `Vec`/`BTreeMap`), so they
+/// compare structurally — the one deliberate divergence from ECMA identity,
+/// documented in M2-T05.
+fn strictly_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Null, Value::Null) => true,
+        (Value::Undefined, Value::Undefined) | (Value::Null, Value::Null) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Number(x), Value::Number(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => x == y,
+        (Value::BigInt(x), Value::BigInt(y)) => x == y,
+        (Value::Symbol(x), Value::Symbol(y)) => x.id == y.id,
+        (Value::Object(x), Value::Object(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Value::Function { captured: x, .. }, Value::Function { captured: y, .. }) => {
+            std::ptr::eq(x, y)
+        }
         (Value::Array(x), Value::Array(y)) => x == y,
         (Value::Map(x), Value::Map(y)) => x == y,
-        _ => false,
+        _ => a == b,
     }
+}
+
+/// ECMA-262 section 7.2.14 IsLooselyEqual (`==`). Coercion ladder: same-type
+/// comparison; `null == undefined`; booleans coerce to numbers first;
+/// number/string coerce toward each other; BigInt compares against string and
+/// number mathematically; objects go through OrdinaryToPrimitive (valueOf,
+/// then toString). A methodless object raises TypeError exactly as ECMA does
+/// for `Object.create(null) == x` (our model has no built-in
+/// Object.prototype methods yet, so every plain object is null-prototype).
+#[allow(clippy::too_many_arguments)]
+fn loosely_equal(
+    a: &Value,
+    b: &Value,
+    env: &mut Env,
+    frame: &mut HookFrame,
+    host: &mut dyn Host,
+    components: &[RuntimeComponent],
+    effects: &mut Vec<EffectBody>,
+) -> Result<bool, RuntimeError> {
+    match (a, b) {
+        // Same-type operands compare strictly (steps 1-2).
+        (Value::Undefined, Value::Undefined) | (Value::Null, Value::Null) => Ok(true),
+        (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => Ok(true),
+        (Value::Number(x), Value::Number(y)) => Ok(x == y),
+        (Value::Str(x), Value::Str(y)) => Ok(x == y),
+        (Value::Bool(x), Value::Bool(y)) => Ok(x == y),
+        (Value::BigInt(x), Value::BigInt(y)) => Ok(x == y),
+        (Value::Symbol(x), Value::Symbol(y)) => Ok(x.id == y.id),
+        (Value::Object(_), Value::Object(_)) => Ok(strictly_equal(a, b)),
+        // Number <-> String: coerce the string side (steps 3-4).
+        (Value::Number(x), Value::Str(_)) => Ok(*x == ecma_to_number(b)),
+        (Value::Str(_), Value::Number(y)) => Ok(ecma_to_number(a) == *y),
+        // BigInt <-> String: StringToBigInt; unparseable strings are not equal
+        // (steps 5-6).
+        (Value::BigInt(x), Value::Str(_)) | (Value::Str(_), Value::BigInt(x)) => {
+            let s = if matches!(a, Value::Str(_)) { a } else { b };
+            Ok(string_to_bigint(s).map(|n| n == *x).unwrap_or(false))
+        }
+        // Booleans coerce to numbers FIRST, then re-compare (steps 7-8) — so
+        // `true == 1` but `true == "2"` is false ("2" -> 2 != 1).
+        (Value::Bool(_), _) => loosely_equal(
+            &Value::Number(ecma_to_number(a)),
+            b,
+            env,
+            frame,
+            host,
+            components,
+            effects,
+        ),
+        (_, Value::Bool(_)) => loosely_equal(
+            a,
+            &Value::Number(ecma_to_number(b)),
+            env,
+            frame,
+            host,
+            components,
+            effects,
+        ),
+        // BigInt <-> Number: mathematical equality; NaN/Inf/integral check
+        // (steps 9-10).
+        (Value::BigInt(x), Value::Number(y)) => Ok(number_bigint_equal(*y, *x)),
+        (Value::Number(x), Value::BigInt(y)) => Ok(number_bigint_equal(*x, *y)),
+        // Object vs primitive: OrdinaryToPrimitive (valueOf, then toString),
+        // then re-compare (steps 12-13). A methodless object (null
+        // prototype — our plain objects have no Object.prototype yet) raises
+        // TypeError, exactly as `Object.create(null) == 1` does in ECMA.
+        (Value::Object(_), _) => {
+            let pa = to_primitive(a, env, frame, host, components, effects)?;
+            loosely_equal(&pa, b, env, frame, host, components, effects)
+        }
+        (_, Value::Object(_)) => {
+            let pb = to_primitive(b, env, frame, host, components, effects)?;
+            loosely_equal(a, &pb, env, frame, host, components, effects)
+        }
+        // Remaining pairs (Symbol vs string/number, function vs primitive,
+        // runtime-internal variants): no ECMA coercion step applies, so fall
+        // back to same-variant comparison — different types are not equal.
+        _ => Ok(a == b),
+    }
+}
+
+/// OrdinaryToPrimitive for the default hint: call the object's `valueOf`,
+/// then `toString`; the first non-object result wins. Objects with neither
+/// callable method are a TypeError.
+#[allow(clippy::too_many_arguments)]
+fn to_primitive(
+    v: &Value,
+    env: &mut Env,
+    frame: &mut HookFrame,
+    host: &mut dyn Host,
+    components: &[RuntimeComponent],
+    effects: &mut Vec<EffectBody>,
+) -> Result<Value, RuntimeError> {
+    // Arrays convert like Array.prototype.toString (join with ","):
+    // null/undefined elements become empty strings.
+    if let Value::Array(items) = v {
+        let parts: Vec<String> = items
+            .iter()
+            .map(|e| match e {
+                Value::Null | Value::Undefined => String::new(),
+                other => other.display(),
+            })
+            .collect();
+        return Ok(Value::from_str_utf8(&parts.join(",")));
+    }
+    if let Value::Object(_) = v {
+        for name in ["valueOf", "toString"] {
+            if let Value::Function { .. } = get_prop(v, name)? {
+                let f = get_prop(v, name)?;
+                let r = call_value(&f, &[], env, frame, host, components, effects, Some(v))?;
+                if !matches!(r, Value::Object(_)) {
+                    return Ok(r);
+                }
+            }
+        }
+        return Err(RuntimeError::new(
+            "Cannot convert object to primitive value (no callable valueOf/toString)",
+        ));
+    }
+    Ok(v.clone())
+}
+
+/// StringToBigInt: trim, parse as i64; any failure yields None (the caller
+/// treats it as "not equal", per ECMA).
+fn string_to_bigint(v: &Value) -> Option<i64> {
+    let s = v.as_str_utf8()?;
+    s.trim().parse::<i64>().ok()
+}
+
+/// BigInt/number mathematical equality: the number must be finite, integral,
+/// and equal to the BigInt (i64 bounds the BigInt, so numbers beyond that
+/// range simply never compare equal to it).
+fn number_bigint_equal(n: f64, b: i64) -> bool {
+    n.is_finite() && n.fract() == 0.0 && n == b as f64
 }
 
 fn eval_un(op: JsUnOp, v: &Value) -> Result<Value, RuntimeError> {
