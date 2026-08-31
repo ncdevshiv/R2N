@@ -163,6 +163,9 @@ pub struct Runtime {
     handlers: HashMap<NodeId, Vec<(String, Value)>>,
     /// FIFO render scheduler with per-instance dedup (M0.2-T04).
     scheduler: Scheduler,
+    /// The GLOBAL environment (M2-T08): top-level `function*` declarations
+    /// bind here once; every render env chains from it (Env::child_of).
+    global_env: Env,
 }
 
 struct LogHost<'a> {
@@ -177,7 +180,20 @@ impl<'a> Host for LogHost<'a> {
 
 impl Runtime {
     pub fn new(template: RuntimeTemplate) -> Self {
+        // Global env: one binding per top-level generator declaration.
+        let mut global_env = Env::new();
+        for g in &template.generators {
+            global_env.define(
+                &g.name,
+                Value::GeneratorFn(std::rc::Rc::new(crate::value::AsyncFnData {
+                    params: g.params.clone(),
+                    segments: g.segments.clone(),
+                    captured: Env::new(),
+                })),
+            );
+        }
         Self {
+            global_env,
             template,
             frames: FrameStore::default(),
             scopes: HashMap::new(),
@@ -240,6 +256,7 @@ impl Runtime {
         let mut splices = SpliceMap::new();
         let (tree, deferred_effects) = render_root(
             &self.template,
+            &self.global_env,
             &mut self.frames,
             &mut scopes,
             &mut splices,
@@ -364,6 +381,7 @@ impl Runtime {
 /// `render_node` calls can borrow them and the template independently.
 fn render_root(
     template: &RuntimeTemplate,
+    global_env: &Env,
     frames: &mut FrameStore,
     scopes: &mut HashMap<Vec<String>, InstanceScope>,
     splices: &mut SpliceMap,
@@ -374,7 +392,8 @@ fn render_root(
     let path = vec!["root".to_string()];
     let pass = frames.current_pass();
     let unmount_cleanups = frames.get(&path).begin_render(pass);
-    let mut env = Env::new();
+    // Chained from the GLOBAL env: top-level generators are visible.
+    let mut env = Env::child_of(global_env);
     let mut effects: Vec<EffectJob> = Vec::new();
     // Unmount cleanups run immediately; the frame borrow ended above.
     if !unmount_cleanups.is_empty() {

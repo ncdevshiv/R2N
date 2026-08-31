@@ -124,6 +124,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Ident(kw) if kw == "class" => Ok(Decl::Class(self.parse_class()?)),
             TokenKind::Ident(kw) if kw == "export" => self.parse_export(),
+            TokenKind::Ident(kw) if kw == "function" => self.parse_generator_fn(),
             _ => Err(self.err("expected a declaration (import/component/export)")),
         }
     }
@@ -237,6 +238,38 @@ impl<'a> Parser<'a> {
         let name = self.expect_ident()?;
         self.expect(TokenKind::Semicolon)?;
         Ok(Decl::ExportDefault(name))
+    }
+
+    /// `function* name(params) { stmts }` — a top-level generator (M2-T08).
+    fn parse_generator_fn(&mut self) -> Result<Decl, ParseError> {
+        self.advance()?; // `function`
+        if !self.check(&TokenKind::Star) {
+            return Err(self
+                .err("expected `function*` (only generator function declarations are supported)"));
+        }
+        self.advance()?; // `*`
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::LeftParen)?;
+        let mut params = Vec::new();
+        if !self.check(&TokenKind::RightParen) {
+            params.push(self.expect_ident()?);
+            while self.check(&TokenKind::Comma) {
+                self.advance()?;
+                params.push(self.expect_ident()?);
+            }
+        }
+        self.expect(TokenKind::RightParen)?;
+        self.expect(TokenKind::LeftBrace)?;
+        let mut body = Vec::new();
+        while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
+            body.push(self.parse_stmt()?);
+        }
+        self.expect(TokenKind::RightBrace)?;
+        Ok(Decl::GeneratorFn(r2n_ast::program::GeneratorFn {
+            name,
+            params,
+            body,
+        }))
     }
 
     fn parse_component(&mut self) -> Result<Component, ParseError> {
@@ -663,6 +696,23 @@ impl<'a> Parser<'a> {
                     from_return: false,
                 })
             }
+            TokenKind::Ident(name) if name == "yield" => {
+                // `yield` / `yield expr` — generator suspension (M2-T08); the
+                // lowerer restricts it to generator statement positions.
+                self.advance()?;
+                let value = if self.check(&TokenKind::Semicolon)
+                    || self.check(&TokenKind::RightBrace)
+                    || self.check(&TokenKind::Eof)
+                {
+                    None
+                } else {
+                    Some(Box::new(self.parse_expr()?))
+                };
+                Ok(Expr::Yield {
+                    value,
+                    from_return: false,
+                })
+            }
             TokenKind::Ident(name) if name == "throw" => {
                 // `throw value` — an expression form; the value raises to the
                 // nearest enclosing try (eval turns it into a thrown Value).
@@ -791,6 +841,10 @@ impl<'a> Parser<'a> {
                             value,
                             from_return: true,
                         },
+                        Expr::Yield { value, .. } => Expr::Yield {
+                            value,
+                            from_return: true,
+                        },
                         other => other,
                     };
                     stmts.push(v);
@@ -844,6 +898,10 @@ impl<'a> Parser<'a> {
                 // fn (marked; a bare terminal `await p;` only suspends).
                 let v = match v {
                     Expr::Await { value, .. } => Expr::Await {
+                        value,
+                        from_return: true,
+                    },
+                    Expr::Yield { value, .. } => Expr::Yield {
                         value,
                         from_return: true,
                     },

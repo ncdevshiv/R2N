@@ -62,6 +62,18 @@ pub const ARTIFACT_FORMAT_VERSION: u32 = 1;
 /// Carries an artifact manifest: format version + generator version, so any
 /// consumer can verify compatibility before executing (stamped by the
 /// compiler; round-trips through JSON with the artifact).
+/// A lowered top-level generator function (M2-T08).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeneratorIr {
+    pub name: String,
+    pub params: Vec<String>,
+    pub segments: Vec<crate::js::JsAsyncSegment>,
+}
+
+/// The whole compiled program: a table of components plus the root index.
+/// Carries an artifact manifest: format version + generator version, so any
+/// consumer can verify compatibility before executing (stamped by the
+/// compiler; round-trips through JSON with the artifact).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RuntimeTemplate {
     /// Dev build flag: in dev, effects run the React StrictMode double
@@ -72,6 +84,10 @@ pub struct RuntimeTemplate {
 
     pub components: Vec<RuntimeComponent>,
     pub root: usize,
+    /// Top-level `function*` declarations (M2-T08): lowered into segment
+    /// state machines; the runtime binds them as values in the global env.
+    #[serde(default)]
+    pub generators: Vec<GeneratorIr>,
     /// Artifact manifest (M0.3-T09): format + generator stamps.
     #[serde(default)]
     pub manifest: ArtifactManifest,

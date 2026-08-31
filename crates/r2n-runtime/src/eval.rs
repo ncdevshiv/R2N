@@ -49,8 +49,14 @@ impl Env {
     /// A fresh env whose context stack is the SHARED stack of `parent` —
     /// children of a provider must see the provider's values.
     pub fn child_of(parent: &Env) -> Self {
+        // CHAINED (M2-T08): the child shares the parent's frames (Rc) and
+        // gets a fresh top scope of its own. Reads walk into the parent
+        // (this is how the GLOBAL env — top-level `function*` declarations —
+        // reaches every component); defines land in the child's own top.
+        let mut frames = parent.frames.clone();
+        frames.push(std::rc::Rc::new(std::cell::RefCell::new(BTreeMap::new())));
         Self {
-            frames: vec![std::rc::Rc::new(std::cell::RefCell::new(BTreeMap::new()))],
+            frames,
             ctx: parent.ctx.clone(),
         }
     }
@@ -470,6 +476,40 @@ pub fn eval(
                         });
                     }
                     return Ok(Value::Promise(result));
+                }
+                // Generator protocol (M2-T08): next(arg) / return(v) /
+                // throw(e) — and the iterator protocol on arrays
+                // (.values()/.entries()/.keys() -> a snapshot iterator).
+                if matches!(prop.as_str(), "next" | "return" | "throw") {
+                    let b = eval(base, env, frame, host, components, effects)?;
+                    if let Value::Generator(g) = &b {
+                        return generator_call(
+                            g, prop, args, env, frame, host, components, effects,
+                        );
+                    }
+                    // Iterator protocol on arrays: {value, done} results.
+                    if prop == "next" {
+                        if let Value::ArrayIter(it) = &b {
+                            return array_iter_next(it);
+                        }
+                    }
+                }
+                if matches!(prop.as_str(), "values" | "entries" | "keys") {
+                    let b = eval(base, env, frame, host, components, effects)?;
+                    if let Value::Array(items) = &b {
+                        let kind = match prop.as_str() {
+                            "values" => crate::value::ArrayIterKind::Values,
+                            "entries" => crate::value::ArrayIterKind::Entries,
+                            _ => crate::value::ArrayIterKind::Keys,
+                        };
+                        return Ok(Value::ArrayIter(std::rc::Rc::new(std::cell::RefCell::new(
+                            crate::value::ArrayIterState {
+                                items: items.clone(),
+                                idx: 0,
+                                kind,
+                            },
+                        ))));
+                    }
                 }
                 // Promise.resolve(v) / Promise.reject(e) statics.
                 if let JsExpr::Var(pr) = &**base {
@@ -1047,6 +1087,25 @@ fn call_value(
             );
             Ok(Value::Promise(result))
         }
+        Value::GeneratorFn(f) => {
+            // Calling a generator function creates an instance: params bind
+            // in a fresh env over the fn's captured (global) env; nothing
+            // runs until the first next() (ECMA laziness).
+            let mut cenv = f.captured.clone();
+            cenv.push_scope();
+            for (i, p) in f.params.iter().enumerate() {
+                cenv.define(p, args.get(i).cloned().unwrap_or(Value::Undefined));
+            }
+            Ok(Value::Generator(std::rc::Rc::new(std::cell::RefCell::new(
+                crate::value::GeneratorInst {
+                    f: f.clone(),
+                    env: cenv,
+                    seg: 0,
+                    done: false,
+                    pending_bind: None,
+                },
+            ))))
+        }
         Value::Settler { promise, fulfill } => {
             // `resolve(v)` / `reject(v)` inside a Promise executor: settle
             // the promise, queueing its handlers as jobs. Settling an
@@ -1276,6 +1335,8 @@ fn call_var(
                 // settler is an internal callable.
                 Value::Promise(_) => "object",
                 Value::AsyncFn(_) => "function",
+                Value::GeneratorFn(_) => "function",
+                Value::Generator(_) | Value::ArrayIter(_) => "object",
                 Value::Settler { .. } => "function",
             }))
         }
@@ -1504,6 +1565,127 @@ fn deps_from_value(v: &Value) -> Vec<Value> {
 
 /// Run a captured effect body (used after commit) against the frame that
 /// owns any hook handles the body references.
+/// A generator's pull-based segment step (M2-T08): run segment `seg` in the
+/// instance env; a terminal yield SUSPENDS (Yield outcome), the final
+/// segment completes (Done). Unlike async, no job queue — the caller of
+/// next() drives.
+#[allow(clippy::too_many_arguments)]
+fn run_generator_step(
+    f: &std::rc::Rc<crate::value::AsyncFnData>,
+    seg: usize,
+    env: &mut Env,
+    frame: &mut HookFrame,
+    host: &mut dyn Host,
+    components: &[RuntimeComponent],
+    effects: &mut Vec<EffectJob>,
+) -> Result<(Value, Option<String>, bool), RuntimeError> {
+    // (yield value | completion value, pending bind of the yield, done)
+    let step = f.segments[seg].clone();
+    let mut outcome: Result<Value, RuntimeError> = Ok(Value::Undefined);
+    for s in &step.stmts {
+        outcome = eval(s, env, frame, host, components, effects);
+        if outcome.is_err() {
+            break;
+        }
+    }
+    let v = outcome?;
+    match &step.await_expr {
+        Some(yexpr) => {
+            let yv = eval(yexpr, env, frame, host, components, effects)?;
+            if step.await_completes {
+                // `return yield v`: the NEXT next(arg) completes the
+                // generator with arg — treat like a yield with a
+                // completion flag (handled by the caller via pending_bind
+                // + a sentinel done-on-resume; the segment AFTER this one
+                // is the empty terminal).
+                Ok((yv, step.await_bind.clone(), false))
+            } else {
+                Ok((yv, step.await_bind.clone(), false))
+            }
+        }
+        None => Ok((v, None, true)),
+    }
+}
+
+/// `g.next(arg)` / `g.return(v)` / `g.throw(e)` (M2-T08).
+#[allow(clippy::too_many_arguments)]
+fn generator_call(
+    g: &std::rc::Rc<std::cell::RefCell<crate::value::GeneratorInst>>,
+    prop: &str,
+    args: &[JsExpr],
+    env: &mut Env,
+    frame: &mut HookFrame,
+    host: &mut dyn Host,
+    components: &[RuntimeComponent],
+    effects: &mut Vec<EffectJob>,
+) -> Result<Value, RuntimeError> {
+    let arg = if let Some(a) = args.first() {
+        eval(a, env, frame, host, components, effects)?
+    } else {
+        Value::Undefined
+    };
+    match prop {
+        "next" => {
+            let mut inst = g.borrow_mut();
+            if inst.done {
+                return Ok(crate::value::iter_result(Value::Undefined, true));
+            }
+            // Bind the previous yield's target (ECMA: the yield EXPRESSION's
+            // value is the next() argument).
+            if let Some(b) = inst.pending_bind.take() {
+                inst.env.define(&b, arg.clone());
+            }
+            let f = inst.f.clone();
+            let mut ienv = inst.env.clone();
+            let seg = inst.seg;
+            drop(inst);
+            let (value, bind, done) =
+                run_generator_step(&f, seg, &mut ienv, frame, host, components, effects)?;
+            let mut inst = g.borrow_mut();
+            if done {
+                inst.done = true;
+                Ok(crate::value::iter_result(value, true))
+            } else {
+                inst.seg = seg + 1;
+                inst.pending_bind = bind;
+                inst.env = ienv;
+                Ok(crate::value::iter_result(value, false))
+            }
+        }
+        "return" => {
+            let mut inst = g.borrow_mut();
+            inst.done = true;
+            Ok(crate::value::iter_result(arg, true))
+        }
+        "throw" => {
+            let mut inst = g.borrow_mut();
+            inst.done = true;
+            Err(RuntimeError::thrown(arg))
+        }
+        _ => unreachable!("prop checked by caller"),
+    }
+}
+
+/// `it.next()` for array iterators (M2-T08): {value, done} over a snapshot.
+fn array_iter_next(
+    it: &std::rc::Rc<std::cell::RefCell<crate::value::ArrayIterState>>,
+) -> Result<Value, RuntimeError> {
+    let mut st = it.borrow_mut();
+    if st.idx >= st.items.len() {
+        return Ok(crate::value::iter_result(Value::Undefined, true));
+    }
+    let i = st.idx;
+    st.idx += 1;
+    let v = match st.kind {
+        crate::value::ArrayIterKind::Values => st.items[i].clone(),
+        crate::value::ArrayIterKind::Keys => Value::Number(i as f64),
+        crate::value::ArrayIterKind::Entries => {
+            Value::Array(vec![Value::Number(i as f64), st.items[i].clone()])
+        }
+    };
+    Ok(crate::value::iter_result(v, false))
+}
+
 /// One state-machine step of an async fn (M2-T07). Runs segment `seg` in
 /// `call_env`; a terminal await suspends — the resolved value arrives later
 /// as a `EffectJob::Resume` job (scheduler-driven). An error in a segment

@@ -97,6 +97,14 @@ pub enum Value {
     /// An async function: segments + captured env. Each CALL creates a fresh
     /// result promise and runs segment 0 synchronously (M2-T07).
     AsyncFn(std::rc::Rc<AsyncFnData>),
+    /// A top-level generator function (M2-T08): calling it creates a
+    /// Generator instance (pull-based segments).
+    GeneratorFn(std::rc::Rc<AsyncFnData>),
+    /// A live generator instance: its own env, the next segment to run, and
+    /// the bind target of the yield it is suspended on.
+    Generator(std::rc::Rc<std::cell::RefCell<GeneratorInst>>),
+    /// An array iterator (M2-T08): `arr.values()/.entries()/.keys()`.
+    ArrayIter(std::rc::Rc<std::cell::RefCell<ArrayIterState>>),
     /// The `resolve`/`reject` parameters handed to a Promise executor:
     /// calling it settles the referenced promise (no-op if already settled).
     Settler {
@@ -177,6 +185,9 @@ impl PartialEq for Value {
             (Object(a), Object(b)) => std::rc::Rc::ptr_eq(a, b),
             (Promise(a), Promise(b)) => std::rc::Rc::ptr_eq(a, b),
             (AsyncFn(a), AsyncFn(b)) => std::rc::Rc::ptr_eq(a, b),
+            (GeneratorFn(a), GeneratorFn(b)) => std::rc::Rc::ptr_eq(a, b),
+            (Generator(a), Generator(b)) => std::rc::Rc::ptr_eq(a, b),
+            (ArrayIter(a), ArrayIter(b)) => std::rc::Rc::ptr_eq(a, b),
             (Settler { promise: a, .. }, Settler { promise: b, .. }) => std::rc::Rc::ptr_eq(a, b),
             (a, b) => {
                 let _ = b;
@@ -211,6 +222,9 @@ impl Value {
             (Object(_), Object(_)) => false, // handled by ptr_eq above
             (Promise(_), Promise(_)) => false, // handled by ptr_eq above
             (AsyncFn(_), AsyncFn(_)) => false, // handled by ptr_eq above
+            (GeneratorFn(_), GeneratorFn(_)) => false, // handled by ptr_eq above
+            (Generator(_), Generator(_)) => false, // handled by ptr_eq above
+            (ArrayIter(_), ArrayIter(_)) => false, // handled by ptr_eq above
             (Settler { .. }, Settler { .. }) => false, // handled by ptr_eq above
             (Function { .. }, Function { .. }) => false, // handled above
             (Handler { .. }, Handler { .. }) => false, // handled above
@@ -265,7 +279,12 @@ impl Value {
             Value::Pending => true,
             Value::Children(_) => true,
             // Promises/async fns are objects in ECMA — always truthy.
-            Value::Promise(_) | Value::AsyncFn(_) | Value::Settler { .. } => true,
+            Value::Promise(_)
+            | Value::AsyncFn(_)
+            | Value::GeneratorFn(_)
+            | Value::Generator(_)
+            | Value::ArrayIter(_)
+            | Value::Settler { .. } => true,
         }
     }
 
@@ -310,6 +329,9 @@ impl Value {
             Value::Children(_) => "<children>".to_string(),
             Value::Promise(_) => "[object Promise]".to_string(),
             Value::AsyncFn(_) => "[object AsyncFunction]".to_string(),
+            Value::GeneratorFn(_) => "[function]".to_string(),
+            Value::Generator(_) => "[object Generator]".to_string(),
+            Value::ArrayIter(_) => "[object Array Iterator]".to_string(),
             Value::Settler { .. } => "<settler>".to_string(),
         }
     }
@@ -413,6 +435,43 @@ pub struct AsyncFnData {
     pub params: Vec<String>,
     pub segments: Vec<r2n_ir::js::JsAsyncSegment>,
     pub captured: crate::eval::Env,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ArrayIterKind {
+    Values,
+    Entries,
+    Keys,
+}
+
+/// Snapshot array-iterator state (M2-T08).
+#[derive(Debug)]
+pub struct ArrayIterState {
+    pub items: Vec<Value>,
+    pub idx: usize,
+    pub kind: ArrayIterKind,
+}
+
+/// A live generator instance (M2-T08): PULL-based segments — `next()` runs
+/// the current segment; a terminal yield suspends with `{value, done:false}`;
+/// the NEXT `next(arg)` binds arg to the yield's target and continues.
+#[derive(Debug)]
+pub struct GeneratorInst {
+    pub f: std::rc::Rc<AsyncFnData>,
+    pub env: crate::eval::Env,
+    pub seg: usize,
+    pub done: bool,
+    /// The bind target of the yield we are suspended on (`let x = yield v`):
+    /// the next `next(arg)` defines it.
+    pub pending_bind: Option<String>,
+}
+
+/// An ECMA iterator result object: `{value, done}` (M2-T08).
+pub fn iter_result(value: Value, done: bool) -> Value {
+    let mut data = ObjData::new();
+    data.set_own("value".to_string(), value);
+    data.set_own("done".to_string(), Value::Bool(done));
+    Value::Object(std::rc::Rc::new(std::cell::RefCell::new(data)))
 }
 
 /// Type errors raised by evaluation (e.g. calling a non-function), and the
