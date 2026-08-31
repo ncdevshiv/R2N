@@ -337,7 +337,7 @@ phases:
       - id: "M2-T04"
         title: "Classes, this, new, prototype chain"
         priority: "P0"
-        done: false
+        done: true
       - id: "M2-T05"
         title: "Equality & coercion — == vs ===, ToPrimitive, ToString/ToNumber"
         priority: "P0"

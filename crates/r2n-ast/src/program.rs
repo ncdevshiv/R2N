@@ -32,10 +32,14 @@ pub struct Component {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassComponent {
     pub name: String,
-    /// The `state = expr;` initializer (optional).
+    /// The base class (`extends X`), if any. `Component` is the React
+    /// special base (M1-T12); other bases are ordinary ES classes (M2-T04).
+    pub extends: Option<String>,
+    /// The `state = expr;` initializer (React component form).
     pub state: Option<Expr>,
-    /// Methods by name (`render` is required; `componentDidMount`
-    /// / `componentDidUpdate` / `componentWillUnmount` are lifecycle).
+    /// Methods by name — `constructor` is the ES constructor; `render` is
+    /// the React lifecycle; componentDidMount / componentDidUpdate /
+    /// componentWillUnmount are React lifecycle.
     pub methods: Vec<Method>,
 }
 

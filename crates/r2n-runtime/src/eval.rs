@@ -72,6 +72,11 @@ impl Env {
                 return Ok(v.clone());
             }
         }
+        // Strict-mode `this` outside a member call is `undefined`, not an
+        // unbound-variable error (ES semantics).
+        if name == "this" {
+            return Ok(Value::Undefined);
+        }
         Err(RuntimeError::new(format!("unbound variable '{name}'")))
     }
 
@@ -115,6 +120,61 @@ pub fn eval(
             let v = eval(base, env, frame, host, components, effects)?;
             let k = eval(key, env, frame, host, components, effects)?;
             index_prop(&v, &k)
+        }
+        JsExpr::New { callee, args } => {
+            // `new P(args)`: P must be a non-React class in the component
+            // table. Creates an instance whose prototype carries the class
+            // methods (as Functions; `this` is bound at method calls).
+            let name = match &**callee {
+                JsExpr::Var(n) => n.clone(),
+                other => {
+                    return Err(RuntimeError::new(format!(
+                        "new expects a class name, got {other:?}"
+                    )))
+                }
+            };
+            let class_info = components
+                .iter()
+                .find(|c| c.name == name)
+                .and_then(|c| c.class.clone())
+                .ok_or_else(|| RuntimeError::new(format!("class '{name}' not found")))?;
+            // Prototype with methods (Functions; `this` bound per call).
+            let mut proto_data = crate::value::ObjData::new();
+            for (mname, m) in &class_info.methods {
+                if mname == "constructor" {
+                    continue;
+                }
+                proto_data.props.insert(
+                    mname.clone(),
+                    Value::Function {
+                        params: m.params.clone(),
+                        body: Box::new(m.body.clone()),
+                        captured: Env::new(),
+                    },
+                );
+            }
+            let proto = std::rc::Rc::new(std::cell::RefCell::new(proto_data));
+            let inst = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
+                crate::value::ObjData {
+                    props: BTreeMap::new(),
+                    proto: Some(proto),
+                },
+            )));
+            // Run the constructor with `this` = instance and params bound.
+            if let Some((_, ctor)) = class_info.methods.iter().find(|(n, _)| n == "constructor") {
+                let mut cenv = Env::new();
+                cenv.define("this", inst.clone());
+                for (i, p) in ctor.params.iter().enumerate() {
+                    let v = if let Some(a) = args.get(i) {
+                        eval(a, env, frame, host, components, effects)?
+                    } else {
+                        Value::Undefined
+                    };
+                    cenv.define(p, v);
+                }
+                let _ = eval(&ctor.body, &mut cenv, frame, host, components, effects)?;
+            }
+            Ok(inst)
         }
         JsExpr::Assign { target, value } => {
             let v = eval(value, env, frame, host, components, effects)?;
@@ -263,6 +323,32 @@ pub fn eval(
             if let JsExpr::Var(name) = &**callee {
                 return call_var(name, args, env, frame, host, components, effects);
             }
+            // Method call `o.m(...)`: the member-call receiver is bound to
+            // the function's `this` (JS semantics) — and the callee value is
+            // resolved via get_prop (prototype chain walk) so inherited
+            // methods work.
+            if let JsExpr::Get { base, prop } = &**callee {
+                let b = eval(base, env, frame, host, components, effects)?;
+                // `this` is bound for member calls on object receivers;
+                // for others the receiver is still the value (primitives
+                // have methods too — e.g. array/string length).
+                let this_arg = Some(&b);
+                let callee_val = get_prop(&b, prop);
+                let arg_vals: Result<Vec<Value>, RuntimeError> = args
+                    .iter()
+                    .map(|a| eval(a, env, frame, host, components, effects))
+                    .collect();
+                return call_value(
+                    &callee_val?,
+                    &arg_vals?,
+                    env,
+                    frame,
+                    host,
+                    components,
+                    effects,
+                    this_arg,
+                );
+            }
             let callee_val = eval(callee, env, frame, host, components, effects)?;
             let arg_vals: Result<Vec<Value>, RuntimeError> = args
                 .iter()
@@ -277,6 +363,7 @@ pub fn eval(
                 host,
                 components,
                 effects,
+                None,
             )
         }
         JsExpr::Builtin(_) => Err(RuntimeError::new(
@@ -519,9 +606,11 @@ fn call_value(
     host: &mut dyn Host,
     components: &[RuntimeComponent],
     effects: &mut Vec<EffectBody>,
+    this_arg: Option<&Value>,
 ) -> Result<Value, RuntimeError> {
     match callee {
         Value::Setter(s) => {
+            let _ = this_arg;
             let next = args
                 .first()
                 .cloned()
@@ -530,6 +619,7 @@ fn call_value(
             Ok(Value::Null)
         }
         Value::Dispatcher { slot } => {
+            let _ = this_arg;
             let action = args
                 .first()
                 .cloned()
@@ -564,6 +654,10 @@ fn call_value(
             // scope; shared-frame writes in the captured scope are seen).
             let mut fenv = captured.clone();
             fenv.push_scope();
+            // Method calls bind the receiver as `this`.
+            if let Some(t) = this_arg {
+                fenv.define("this", t.clone());
+            }
             for (i, p) in params.iter().enumerate() {
                 fenv.define(p, args.get(i).cloned().unwrap_or(Value::Undefined));
             }
@@ -840,6 +934,7 @@ fn call_var(
                 host,
                 components,
                 effects,
+                None,
             )
         }
     }
