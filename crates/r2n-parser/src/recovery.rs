@@ -735,6 +735,26 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                     }
                     break;
                 }
+                // `let`/`const` inside a block-bodied arrow: a scoped local
+                // (mirrors parser.rs).
+                if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "let" || kw == "const")
+                {
+                    self.bump();
+                    let name = self.expect_ident()?;
+                    self.expect(TokenKind::Equals)?;
+                    let value = self.parse_expr()?;
+                    if self.check(&TokenKind::Semicolon) {
+                        self.bump();
+                    }
+                    stmts.push(Expr::Assign {
+                        target: Box::new(Expr::Ident {
+                            name,
+                            is_component: false,
+                        }),
+                        value: Box::new(value),
+                    });
+                    continue;
+                }
                 stmts.push(self.parse_expr()?);
                 if self.check(&TokenKind::Semicolon) {
                     self.bump();

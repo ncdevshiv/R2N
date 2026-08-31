@@ -333,7 +333,7 @@ phases:
       - id: "M2-T03"
         title: "Closures & lexical environments with correct capture semantics"
         priority: "P0"
-        done: false
+        done: true
       - id: "M2-T04"
         title: "Classes, this, new, prototype chain"
         priority: "P0"

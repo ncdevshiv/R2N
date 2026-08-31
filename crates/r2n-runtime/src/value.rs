@@ -52,8 +52,10 @@ impl ObjData {
     }
 }
 
-/// A runtime value.
-#[derive(Debug, Clone, PartialEq)]
+/// A runtime value. `Function` compares by reference (its captured env is
+/// not a value-comparable type — two closures are the same function only
+/// when they ARE the same value, JS identity semantics).
+#[derive(Debug, Clone)]
 pub enum Value {
     /// ECMAScript `undefined` (`typeof undefined`).
     Undefined,
@@ -71,10 +73,12 @@ pub enum Value {
     /// chain (M2-T02). Reads walk the chain; writes create own properties.
     Object(std::rc::Rc<std::cell::RefCell<ObjData>>),
     /// A first-class function value: params + body (a `JsExpr`) invoked
-    /// against the caller's env; lexical capture arrives with M2-T03.
+    /// against its CAPTURED lexical environment (the env where the
+    /// arrow was evaluated; M2-T03).
     Function {
         params: Vec<String>,
         body: Box<r2n_ir::js::JsExpr>,
+        captured: crate::eval::Env,
     },
     /// An opaque external handle (host resource; renderer-bound objects).
     External(u64),
@@ -141,7 +145,63 @@ pub enum Value {
     Children(Vec<r2n_ir::react::ReactNode>),
 }
 
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        use Value::*;
+        match (self, other) {
+            (Function { captured: a, .. }, Function { captured: b, .. }) => std::ptr::eq(a, b),
+            (
+                Handler {
+                    inst_path: ai,
+                    body: ab,
+                    ident: ai_,
+                },
+                Handler {
+                    inst_path: bi,
+                    body: bb,
+                    ident: bi_,
+                },
+            ) => ai == bi && ab == bb && ai_ == bi_,
+            (Object(a), Object(b)) => std::rc::Rc::ptr_eq(a, b),
+            (a, b) => {
+                let _ = b;
+                a.same_variant(b)
+            }
+        }
+    }
+}
+
+impl Eq for Value {}
+
 impl Value {
+    /// Variant-by-variant equality used by the derived-style comparison
+    /// (for the value types without identity semantics).
+    fn same_variant(&self, other: &Value) -> bool {
+        use Value::*;
+        match (self, other) {
+            (Undefined, Undefined) => true,
+            (Null, Null) => true,
+            (Bool(a), Bool(b)) => a == b,
+            (Number(a), Number(b)) => a == b,
+            (BigInt(a), BigInt(b)) => a == b,
+            (Str(a), Str(b)) => a == b,
+            (Array(a), Array(b)) => a == b,
+            (Map(a), Map(b)) => a == b,
+            (Symbol(a), Symbol(b)) => a == b,
+            (External(a), External(b)) => a == b,
+            (Setter(a), Setter(b)) => a == b,
+            (Dispatcher { slot: a }, Dispatcher { slot: b }) => a == b,
+            (Ref { slot: a }, Ref { slot: b }) => a == b,
+            (Context { id: a, default: ad }, Context { id: b, default: bd }) => a == b && ad == bd,
+            (Object(_), Object(_)) => false, // handled by ptr_eq above
+            (Function { .. }, Function { .. }) => false, // handled above
+            (Handler { .. }, Handler { .. }) => false, // handled above
+            (Pending, Pending) => true,
+            (Children(a), Children(b)) => a == b,
+            _ => false,
+        }
+    }
+
     pub fn null() -> Self {
         Value::Null
     }

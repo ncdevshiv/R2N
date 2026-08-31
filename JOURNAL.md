@@ -1076,3 +1076,41 @@ chain-walking reads, own-prop shadowing are the observable semantics.
 **CHOSE**
 Reference-object with a real proto chain. 6 tests; suite 176; records
 updated (M2 2/15, 56/106).
+
+## 2026-08-31 — Entry 25: M2-T03 Closures & Lexical Capture
+
+**PLAN**
+Correct JS closure capture semantics: `Env` frames must be SHARED so a
+closure's captured environment is a live reference (later writes visible),
+and a closure called from a DIFFERENT scope resolves its own lexical env
+(the caller's shadowing must not leak in).
+
+**WHAT**
+- `Env` frames became `Rc<RefCell<BTreeMap>>` — `define`/`get`/`child_of`/
+  `push_scope` updated; closure capture = a clone of the frame VECTOR
+  (shared cells).
+- `Value::Function { params, body, captured }`: calls bind params in a
+  child scope of the CAPTURED env, evaluate the body there. Handlers and
+  map/filter arguments still bypass via their dedicated paths.
+- Parser gap closures exposed: `let`/`const` inside block-bodied arrows
+  was parsed as expression statements (an unbound `let` variable at eval)
+  — real JS closures routinely declare locals. Both parsers now lower
+  them to scoped assignments.
+- `PartialEq` is now manual: Function identity by captured-env pointer,
+  Object identity by `Rc::ptr_eq` — JS object identity semantics (two
+  closures/objects are never equal unless the same value).
+
+**WHY**
+A snapshot capture would break the counter pattern (`n = n + 1` across
+calls) and misresolve well-known lexical-shadowing cases; the tests pin
+exactly those observable behaviors.
+
+**OPTIONS**
+- Capture-only-free-vars snapshot: rejected — a snapshot, not a reference;
+  the live-view behavior is the JS semantic.
+- Env as arena + indices: deferred — the Rc approach is correct and
+  simple at this scale; the GC task (M2-T13) will revisit ownership.
+
+**CHOSE**
+Shared-frame lexical env; 5 tests (lexical shadowing, live writes, nested
+closures, cross-scope use, identity). 181 green; records (M2 3/15, 57/106).
