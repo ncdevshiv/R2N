@@ -183,6 +183,11 @@ impl RuntimeError {
     pub fn new(msg: impl Into<String>) -> Self {
         Self(msg.into())
     }
+
+    /// The error message (for error boundaries: `componentDidCatch(err)`).
+    pub fn error_text(&self) -> &str {
+        &self.0
+    }
 }
 
 impl fmt::Display for RuntimeError {

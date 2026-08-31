@@ -798,3 +798,51 @@ the component table rather than two code paths.
 **CHOSE**
 A shared class-env helper over the same ABI. 5 tests; suite 137; records
 updated (M1 12/18, 48/106).
+
+## 2026-08-30 — Entry 18: M1-T13 Error Boundaries
+
+**PLAN**
+React's error semantics: a class with `getDerivedStateFromError(err)` and
+`componentDidCatch(err)` captures a render error from its subtree; the
+boundary derives new state, re-renders (fallback), and the catch hook
+observes the error. No boundary: the error propagates to the top.
+
+**WHAT**
+- The component body render is wrapped in a match; the `Err` arm executes
+  the boundary protocol: derive state (bind `err` to the RuntimeError's
+  message — `RuntimeError::error_text()` added), apply via the useState
+  setter to the state slot, run componentDidCatch (log-observable),
+  rebuild the class env, re-render the body.
+- Subtree errors: since children splices and nested components render
+  inside the boundary's body-render call, ANY descendant error reaches
+  the nearest enclosing boundary match (verified in a mid-tree test where
+  the sibling above the boundary still rendered).
+- No boundary / class without the hooks: error keeps propagating (flush
+  errors — tests pin both).
+
+**BUGS FOUND**
+1. The catch wrote state via `write_state` — which only writes
+   `HookSlot::Reducer` slots; class state is a `use_state` State slot, so
+   the write silently no-oped and the fallback never showed. Fixed with
+   `apply_setter(Setter{frame_index: 0}, derived)`.
+2. The mid-pass re-render reused the frame WITHOUT resetting the hook
+   cursor: the willUnmount synthetic `use_effect` had advanced
+   `next_index` to 1, so `use_state` read the EFFECT slot and returned the
+   initializer again (0) — the derived state was invisible. Fixed with
+   `begin_render(current_pass)` (same-pass: no slot reset, cursor reset).
+
+**WHY**
+Error boundaries are the Level-1 guarantee that one component's failure
+doesn't blank the whole app. Both bugs were exactly the class-of-defect
+the protocol exists to catch: silent state no-ops and hook-cursor leaks
+during partial re-renders.
+
+**OPTIONS**
+- A dedicated `hook_cursor_reset` fn: `begin_render(pass)` already resets
+  the cursor and is safe same-pass (no slot reset); reuse was correct.
+- Boundary via function-component try/catch: rejected — React's boundary
+  API is class-based (`componentDidCatch`); the composition model follows.
+
+**CHOSE**
+Boundary protocol in the Err arm, cursor reset reuse, setter-based state
+write. 4 tests; suite 141; records updated (M1 13/18, 49/106).
