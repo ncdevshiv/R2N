@@ -91,6 +91,18 @@ pub enum Value {
     Array(Vec<Value>),
     /// A string-keyed map (stands in for JS objects / props bags).
     Map(BTreeMap<String, Value>),
+    /// A promise in the ECMA sense: pending until settled (fulfilled or
+    /// rejected); `.then` continuations run as scheduler effects (M2-T07).
+    Promise(std::rc::Rc<std::cell::RefCell<PromiseData>>),
+    /// An async function: segments + captured env. Each CALL creates a fresh
+    /// result promise and runs segment 0 synchronously (M2-T07).
+    AsyncFn(std::rc::Rc<AsyncFnData>),
+    /// The `resolve`/`reject` parameters handed to a Promise executor:
+    /// calling it settles the referenced promise (no-op if already settled).
+    Settler {
+        promise: std::rc::Rc<std::cell::RefCell<PromiseData>>,
+        fulfill: bool,
+    },
     /// An event handler: a closure paired with the component instance path
     /// whose hook frame (and env) it must run against. This is the ABI form of
     /// `onClick={() => setCount(n + 1)}` — handlers are values, so they ride
@@ -163,6 +175,9 @@ impl PartialEq for Value {
                 },
             ) => ai == bi && ab == bb && ai_ == bi_,
             (Object(a), Object(b)) => std::rc::Rc::ptr_eq(a, b),
+            (Promise(a), Promise(b)) => std::rc::Rc::ptr_eq(a, b),
+            (AsyncFn(a), AsyncFn(b)) => std::rc::Rc::ptr_eq(a, b),
+            (Settler { promise: a, .. }, Settler { promise: b, .. }) => std::rc::Rc::ptr_eq(a, b),
             (a, b) => {
                 let _ = b;
                 a.same_variant(b)
@@ -194,6 +209,9 @@ impl Value {
             (Ref { slot: a }, Ref { slot: b }) => a == b,
             (Context { id: a, default: ad }, Context { id: b, default: bd }) => a == b && ad == bd,
             (Object(_), Object(_)) => false, // handled by ptr_eq above
+            (Promise(_), Promise(_)) => false, // handled by ptr_eq above
+            (AsyncFn(_), AsyncFn(_)) => false, // handled by ptr_eq above
+            (Settler { .. }, Settler { .. }) => false, // handled by ptr_eq above
             (Function { .. }, Function { .. }) => false, // handled above
             (Handler { .. }, Handler { .. }) => false, // handled above
             (Pending, Pending) => true,
@@ -246,6 +264,8 @@ impl Value {
             Value::Context { .. } => true,
             Value::Pending => true,
             Value::Children(_) => true,
+            // Promises/async fns are objects in ECMA — always truthy.
+            Value::Promise(_) | Value::AsyncFn(_) | Value::Settler { .. } => true,
         }
     }
 
@@ -288,6 +308,9 @@ impl Value {
             Value::Context { id, .. } => format!("<ctx#{id}>"),
             Value::Pending => "<pending>".to_string(),
             Value::Children(_) => "<children>".to_string(),
+            Value::Promise(_) => "[object Promise]".to_string(),
+            Value::AsyncFn(_) => "[object AsyncFunction]".to_string(),
+            Value::Settler { .. } => "<settler>".to_string(),
         }
     }
 }
@@ -318,6 +341,78 @@ pub fn format_number(n: f64) -> String {
         // Use Rust's default which is shortest round-trippable for f64.
         format!("{}", n)
     }
+}
+
+/// A .then continuation or an async-fn resume, queued when the promise
+/// settles. Both run as scheduler effects (M2-T07).
+#[derive(Debug, Clone)]
+pub enum Continuation {
+    /// A user handler from `.then(onOk, onErr)`: the chosen body runs with
+    /// the settled value bound to its param; its outcome settles `result`
+    /// (fulfilled with the value, rejected on a throw) — ECMA chaining.
+    Then {
+        on_ok: Option<(r2n_ir::js::JsExpr, String)>,
+        on_err: Option<(r2n_ir::js::JsExpr, String)>,
+        env: crate::eval::Env,
+        result: std::rc::Rc<std::cell::RefCell<PromiseData>>,
+        frame_path: Option<Vec<String>>,
+    },
+    /// An async fn suspended at an await: on settle, resume at `seg` —
+    /// bind the resolved value to `bind` (the awaited segment's `x = await p`
+    /// target), or complete the result promise when `completes`
+    /// (`return await p`). `call_env` is the per-call env (its top frame is
+    /// fresh per call, so concurrent calls of the same async fn do not
+    /// clobber each other's locals).
+    Resume {
+        af: std::rc::Rc<AsyncFnData>,
+        seg: usize,
+        bind: Option<String>,
+        completes: bool,
+        call_env: crate::eval::Env,
+        result: std::rc::Rc<std::cell::RefCell<PromiseData>>,
+        frame_path: Option<Vec<String>>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum PromiseState {
+    Pending,
+    Fulfilled(Value),
+    Rejected(Value),
+}
+
+/// Shared promise record (M2-T07). Continuations registered while pending
+/// queue as effects when the promise settles; later registrations on a
+/// settled promise queue immediately (ECMA: then is always async).
+#[derive(Debug)]
+pub struct PromiseData {
+    pub state: PromiseState,
+    /// Settle idempotence: first settle wins. A promise ADOPTING another
+    /// promise (fulfilled-with-a-promise) sets this while staying
+    /// `state: Pending` until the source settles; only the pass-through
+    /// continuation may then force-settle it (force_settle).
+    pub settled: bool,
+    pub handlers: Vec<Continuation>,
+}
+
+impl PromiseData {
+    pub fn new() -> std::rc::Rc<std::cell::RefCell<Self>> {
+        std::rc::Rc::new(std::cell::RefCell::new(Self {
+            state: PromiseState::Pending,
+            settled: false,
+            handlers: Vec::new(),
+        }))
+    }
+}
+
+/// An async function value: its segments and the captured lexical env. The
+/// RESULT promise is per-call (created by call_value), so the value itself
+/// stays callable repeatedly.
+#[derive(Debug)]
+pub struct AsyncFnData {
+    pub params: Vec<String>,
+    pub segments: Vec<r2n_ir::js::JsAsyncSegment>,
+    pub captured: crate::eval::Env,
 }
 
 /// Type errors raised by evaluation (e.g. calling a non-function), and the

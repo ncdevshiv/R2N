@@ -508,6 +508,7 @@ impl<'a> Parser<'a> {
                             args: vec![Expr::Arrow {
                                 params,
                                 body: Box::new(body),
+                                async_: false,
                             }],
                         };
                         // Consume the call's own closing `)` (the `)` of `.map(`
@@ -618,6 +619,7 @@ impl<'a> Parser<'a> {
                     Ok(Expr::Arrow {
                         params,
                         body: Box::new(body),
+                        async_: false,
                     })
                 } else {
                     self.advance()?; // consume the '('
@@ -625,6 +627,41 @@ impl<'a> Parser<'a> {
                     self.expect(TokenKind::RightParen)?;
                     Ok(e)
                 }
+            }
+            TokenKind::Ident(name) if name == "async" && self.looks_like_async_arrow() => {
+                // `async (params) => body` / `async x => body` (M2-T07).
+                self.advance()?; // `async`
+                let mut params = Vec::new();
+                if self.check(&TokenKind::LeftParen) {
+                    self.advance()?;
+                    if !self.check(&TokenKind::RightParen) {
+                        params.push(self.expect_ident()?);
+                        while self.check(&TokenKind::Comma) {
+                            self.advance()?;
+                            params.push(self.expect_ident()?);
+                        }
+                    }
+                    self.expect(TokenKind::RightParen)?;
+                } else {
+                    params.push(self.expect_ident()?);
+                }
+                self.expect(TokenKind::Arrow)?;
+                let body = self.parse_arrow_body()?;
+                Ok(Expr::Arrow {
+                    params,
+                    body: Box::new(body),
+                    async_: true,
+                })
+            }
+            TokenKind::Ident(name) if name == "await" => {
+                // `await expr` — the lowerer restricts it to async statement
+                // positions (a precise compile error elsewhere).
+                self.advance()?;
+                let value = self.parse_expr()?;
+                Ok(Expr::Await {
+                    value: Box::new(value),
+                    from_return: false,
+                })
             }
             TokenKind::Ident(name) if name == "throw" => {
                 // `throw value` — an expression form; the value raises to the
@@ -698,6 +735,41 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Cheap lookahead: does `async` here begin an async arrow —
+    /// `async (params) => ` or `async ident => `? All scan errors -> false
+    /// (then `async` is an ordinary identifier).
+    fn looks_like_async_arrow(&self) -> bool {
+        let mut l = self.lexer; // copy: does not disturb parser state
+        match l.next_token() {
+            Ok(t) => match t.kind {
+                TokenKind::LeftParen => {
+                    let mut depth = 1;
+                    loop {
+                        match l.next_token() {
+                            Ok(t) => match t.kind {
+                                TokenKind::LeftParen => depth += 1,
+                                TokenKind::RightParen => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            },
+                            Err(_) => return false,
+                        }
+                    }
+                    matches!(l.next_token().map(|t| t.kind), Ok(TokenKind::Arrow))
+                }
+                TokenKind::Ident(_) => {
+                    matches!(l.next_token().map(|t| t.kind), Ok(TokenKind::Arrow))
+                }
+                _ => false,
+            },
+            Err(_) => false,
+        }
+    }
+
     /// Parse the body of an arrow function: either a single expression
     /// (`x => x + 1`) or a block of expression statements (`() => { a(); b(); }`).
     fn parse_arrow_body(&mut self) -> Result<Expr, ParseError> {
@@ -711,7 +783,17 @@ impl<'a> Parser<'a> {
                 // `() => { setup(); return () => cleanup(); }`).
                 if matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "return") {
                     self.advance()?;
-                    stmts.push(self.parse_expr()?);
+                    let v = self.parse_expr()?;
+                    // `return await p` — resolved value completes the async
+                    // fn (mirrors parse_block_stmts_inner).
+                    let v = match v {
+                        Expr::Await { value, .. } => Expr::Await {
+                            value,
+                            from_return: true,
+                        },
+                        other => other,
+                    };
+                    stmts.push(v);
                     if self.check(&TokenKind::Semicolon) {
                         self.advance()?;
                     }
@@ -757,7 +839,17 @@ impl<'a> Parser<'a> {
         while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
             if matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "return") {
                 self.advance()?;
-                stmts.push(self.parse_expr()?);
+                let v = self.parse_expr()?;
+                // `return await p` — the resolved value completes the async
+                // fn (marked; a bare terminal `await p;` only suspends).
+                let v = match v {
+                    Expr::Await { value, .. } => Expr::Await {
+                        value,
+                        from_return: true,
+                    },
+                    other => other,
+                };
+                stmts.push(v);
                 if self.check(&TokenKind::Semicolon) {
                     self.advance()?;
                 }

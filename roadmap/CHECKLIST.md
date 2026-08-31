@@ -1,7 +1,7 @@
 # R2N — Complete Execution Checklist
 
 > **R2N — React to Native** — Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime
-> Generated 2026-08-29 · updated 2026-08-31 · **60/106** tasks done (57%).
+> Generated 2026-08-29 · updated 2026-08-31 · **61/106** tasks done (58%).
 > Audit basis: every task was verified against the actual implementation and test suite (54 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
 
 **How to use:** check items off in the interactive tracker ([index.html](index.html)) — it saves live in your browser. This file, [roadmap.yaml](roadmap.yaml), and [roadmap.toml](roadmap.toml) are the portable record; update them when a milestone closes.
@@ -94,7 +94,7 @@ _Behavioral compatibility with React core: full hook set, keys, context, effects
 
 ## M2 — JavaScript Compatibility — Level 2
 
-`IN PROGRESS` · weeks 12–20 · progress **6/15** (40%)
+`IN PROGRESS` · weeks 12–20 · progress **7/15** (47%)
 
 _Full ECMAScript semantics in the compatibility engine: closures, classes, prototypes, coercion, exceptions, promises, generators, modules — the layer that makes arbitrary React code actually run._
 
@@ -104,7 +104,7 @@ _Full ECMAScript semantics in the compatibility engine: closures, classes, proto
 - [x] **P0** - Classes, this, new, prototype chain: `new P(args)` allocates an instance whose prototype carries the class METHODS as functions, runs the ES `constructor` with this bound, returns the instance; this.x sets own props; METHOD calls bind the receiver via call_value this_arg; lower_class branches extends Component (React machinery) vs ES class value; strict-mode this outside a member call = undefined, not unbound; full ES class B extends A inheritance is a documented follow-on (tests/es_classes.rs, 5 tests)
 - [x] **P0** — Equality & coercion — == vs ===, ToPrimitive, ToString/ToNumber: `BinOp::StrictEq/StrictNeq` lexed (`===`/`!==` 3-char tokens), parsed (both twins), lowered (`JsBinOp::StrictEq/StrictNeq`), evaluated; `strictly_equal` = ECMA 7.2.15 (no coercion, NaN !== NaN, -0 === 0, objects/functions by identity — Object via Rc::ptr_eq); `loosely_equal` = ECMA 7.2.14 ladder (null == undefined; number<->string both directions; boolean coerces to number FIRST; BigInt vs number/string mathematical equality; objects via OrdinaryToPrimitive — callable valueOf then toString — a methodless object raises TypeError exactly as `Object.create(null) == 1` does; arrays convert as join(","), elements null/undefined -> ""); symbol/primitive and function/primitive never coerce (false, per ECMA); documented divergence: Array/Map compare structurally (value-copy representation) (tests/equality.rs, 10 tests)
 - [x] **P0** — Exceptions — try/catch/finally propagation across calls: `throw`/`try`/`catch`/`finally` through the full stack (AST Throw/Try -> both parser twins -> JsExpr::Throw/Try -> lowering incl. subst/free-vars with catch-param shadowing -> eval); RuntimeError now CARRIES the thrown JS value (`RuntimeError::thrown`, `caught_value` binds it verbatim; internal errors bind their message string — ECMA ReferenceError parity); eval Try arm: catch in a fresh scope (optional catch binding supported), finally on every path, an error raised in finally REPLACES the pending outcome; `Error(message)` / `new Error(msg)` builtin produces an Error-shaped object ({name, message}); throws propagate across call frames to the nearest try; uncaught throws surface at flush/dispatch; error boundaries still capture render-time throws (thrown message via getDerivedStateFromError/componentDidCatch); `Env::assign` — JS assignment semantics (nearest existing binding, not current-scope shadowing), fixing assignments from nested scopes (catch blocks, closure bodies) (tests/exceptions.rs, 12 tests)
-- [ ] **P0** — Promises + async/await with scheduler-driven continuations
+- [x] **P0** — Promises + async/await with scheduler-driven continuations: `new Promise(executor)` (sync executor, (resolve, reject) settlers, sync-throw rejects), `Promise.resolve/reject` statics, `.then(onOk, onErr)`/`.catch` (always-async jobs, chaining with pass-through identity, handler results incl. returned promises ADOPTING into the chained promise, settle idempotence, self-adoption TypeError); async arrows lower to a SEGMENT STATE MACHINE (`JsExpr::AsyncFn` + `JsAsyncSegment`): segment 0 sync per ECMA, each `await` suspends (bind target / `return await` completion), continuations are `EffectJob` scheduler jobs drained to fixpoint by `drain_jobs`; a segment error or rejected await rejects the result promise (async fns never throw synchronously); await restricted to statement positions (`let x = await p;` / `x = await p;` / `await p;` / `return await p;`) with precise compile errors elsewhere; setState inside continuations re-renders via the existing scheduler (tests/promises.rs, 17 tests)
 - [ ] **P1** — Generators & iterator protocol
 - [ ] **P0** — Modules — import/export/dynamic import + initialization order
 - [ ] **P1** — Destructuring, spread, rest

@@ -9,7 +9,7 @@
 //! evaluator over the ABI value set, with the frame-protocol callbacks for
 //! `useState`/`useEffect` (ADR-002/ADR-003).
 
-use crate::hooks::{EffectBody, HookFrame};
+use crate::hooks::{EffectBody, EffectJob, HookFrame};
 use crate::value::{RuntimeError, Symbol, Value};
 use r2n_ir::js::{JsBinOp, JsExpr, JsUnOp};
 use r2n_ir::runtime::RuntimeComponent;
@@ -115,7 +115,7 @@ pub fn eval(
     frame: &mut HookFrame,
     host: &mut dyn Host,
     components: &[RuntimeComponent],
-    effects: &mut Vec<EffectBody>,
+    effects: &mut Vec<EffectJob>,
 ) -> Result<Value, RuntimeError> {
     match expr {
         JsExpr::Lit(l) => Ok(lit_to_value(l)),
@@ -149,6 +149,42 @@ pub fn eval(
                     )))
                 }
             };
+            if name == "Promise" {
+                // `new Promise(executor)` (M2-T07): the executor runs
+                // synchronously with (resolve, reject) settlers; a throw in
+                // it rejects the promise (ECMA).
+                let Some(JsExpr::Closure { params, body, .. }) = args.first() else {
+                    return Err(RuntimeError::new("new Promise requires an executor arrow"));
+                };
+                let handle = crate::value::PromiseData::new();
+                let fval = Value::Function {
+                    params: params.clone(),
+                    body: body.clone(),
+                    captured: env.clone(),
+                };
+                let res = Value::Settler {
+                    promise: handle.clone(),
+                    fulfill: true,
+                };
+                let rej = Value::Settler {
+                    promise: handle.clone(),
+                    fulfill: false,
+                };
+                if let Err(e) = call_value(
+                    &fval,
+                    &[res, rej],
+                    env,
+                    frame,
+                    host,
+                    components,
+                    effects,
+                    None,
+                ) {
+                    let reason = e.caught_value();
+                    settle_promise(&handle, reason, false, effects);
+                }
+                return Ok(Value::Promise(handle));
+            }
             if name == "Error" {
                 // `new Error(msg)` — same object as a plain Error(msg) call.
                 let msg = if let Some(JsExpr::Lit(r2n_ir::value::Literal::String(s))) = args.first()
@@ -273,6 +309,13 @@ pub fn eval(
             }
             Ok(last)
         }
+        JsExpr::AsyncFn { params, segments } => Ok(Value::AsyncFn(std::rc::Rc::new(
+            crate::value::AsyncFnData {
+                params: params.clone(),
+                segments: segments.clone(),
+                captured: env.clone(),
+            },
+        ))),
         JsExpr::Throw { value } => {
             let v = eval(value, env, frame, host, components, effects)?;
             Err(RuntimeError::thrown(v))
@@ -331,6 +374,116 @@ pub fn eval(
         }
         JsExpr::Call { callee, args } => {
             if let JsExpr::Get { base, prop } = &**callee {
+                // Promise.prototype.then: queue continuations on the
+                // referenced promise (M2-T07). The callbacks run as
+                // scheduler jobs when the promise settles (or immediately
+                // queue if already settled — ECMA: then is always async).
+                if prop == "then" {
+                    let b = eval(base, env, frame, host, components, effects)?;
+                    let Value::Promise(p) = &b else {
+                        return Err(RuntimeError::new(format!(".then on non-promise {b}")));
+                    };
+                    let (on_ok, on_err) = then_callbacks(args)?;
+                    let result = crate::value::PromiseData::new();
+                    let job_env = env.clone();
+                    let fp = frame.path().map(|p| p.to_vec());
+                    let already = {
+                        let mut pd = p.borrow_mut();
+                        match &pd.state {
+                            crate::value::PromiseState::Pending => {
+                                pd.handlers.push(crate::value::Continuation::Then {
+                                    on_ok: on_ok.clone(),
+                                    on_err: on_err.clone(),
+                                    env: job_env.clone(),
+                                    result: result.clone(),
+                                    frame_path: fp.clone(),
+                                });
+                                None
+                            }
+                            crate::value::PromiseState::Fulfilled(v) => Some((v.clone(), false)),
+                            crate::value::PromiseState::Rejected(v) => Some((v.clone(), true)),
+                        }
+                    };
+                    if let Some((value, rejected)) = already {
+                        effects.push(EffectJob::Then {
+                            on_ok,
+                            on_err,
+                            env: job_env,
+                            value,
+                            rejected,
+                            result: result.clone(),
+                            frame_path: fp,
+                        });
+                    }
+                    return Ok(Value::Promise(result));
+                }
+                // .catch(f) is sugar for .then(undefined, f).
+                if prop == "catch" {
+                    let b = eval(base, env, frame, host, components, effects)?;
+                    let Value::Promise(p) = &b else {
+                        return Err(RuntimeError::new(format!(".catch on non-promise {b}")));
+                    };
+                    let on_err = match args.first() {
+                        Some(a) => match a {
+                            JsExpr::Closure { params, body, .. } => {
+                                let param =
+                                    params.first().cloned().unwrap_or_else(|| "$_".to_string());
+                                Some(((**body).clone(), param))
+                            }
+                            other => {
+                                return Err(RuntimeError::new(format!(
+                                    ".catch expects an arrow handler, got {other:?}"
+                                )))
+                            }
+                        },
+                        None => None,
+                    };
+                    let result = crate::value::PromiseData::new();
+                    let job_env = env.clone();
+                    let fp = frame.path().map(|p| p.to_vec());
+                    let already = {
+                        let mut pd = p.borrow_mut();
+                        match &pd.state {
+                            crate::value::PromiseState::Pending => {
+                                pd.handlers.push(crate::value::Continuation::Then {
+                                    on_ok: None,
+                                    on_err: on_err.clone(),
+                                    env: job_env.clone(),
+                                    result: result.clone(),
+                                    frame_path: fp.clone(),
+                                });
+                                None
+                            }
+                            crate::value::PromiseState::Fulfilled(v) => Some((v.clone(), false)),
+                            crate::value::PromiseState::Rejected(v) => Some((v.clone(), true)),
+                        }
+                    };
+                    if let Some((value, rejected)) = already {
+                        effects.push(EffectJob::Then {
+                            on_ok: None,
+                            on_err,
+                            env: job_env,
+                            value,
+                            rejected,
+                            result: result.clone(),
+                            frame_path: fp,
+                        });
+                    }
+                    return Ok(Value::Promise(result));
+                }
+                // Promise.resolve(v) / Promise.reject(e) statics.
+                if let JsExpr::Var(pr) = &**base {
+                    if pr == "Promise" && (prop == "resolve" || prop == "reject") {
+                        let v = if let Some(a) = args.first() {
+                            eval(a, env, frame, host, components, effects)?
+                        } else {
+                            Value::Undefined
+                        };
+                        let h = crate::value::PromiseData::new();
+                        settle_promise(&h, v, prop == "resolve", effects);
+                        return Ok(Value::Promise(h));
+                    }
+                }
                 // Object.create(proto) / Object.getPrototypeOf(obj).
                 if let JsExpr::Var(o) = &**base {
                     if o == "Object" && prop == "create" {
@@ -558,7 +711,7 @@ fn eval_bin(
     frame: &mut HookFrame,
     host: &mut dyn Host,
     components: &[RuntimeComponent],
-    effects: &mut Vec<EffectBody>,
+    effects: &mut Vec<EffectJob>,
 ) -> Result<Value, RuntimeError> {
     use JsBinOp::*;
     match op {
@@ -686,7 +839,7 @@ fn loosely_equal(
     frame: &mut HookFrame,
     host: &mut dyn Host,
     components: &[RuntimeComponent],
-    effects: &mut Vec<EffectBody>,
+    effects: &mut Vec<EffectJob>,
 ) -> Result<bool, RuntimeError> {
     match (a, b) {
         // Same-type operands compare strictly (steps 1-2).
@@ -760,7 +913,7 @@ fn to_primitive(
     frame: &mut HookFrame,
     host: &mut dyn Host,
     components: &[RuntimeComponent],
-    effects: &mut Vec<EffectBody>,
+    effects: &mut Vec<EffectJob>,
 ) -> Result<Value, RuntimeError> {
     // Arrays convert like Array.prototype.toString (join with ","):
     // null/undefined elements become empty strings.
@@ -829,7 +982,7 @@ fn call_value(
     frame: &mut HookFrame,
     host: &mut dyn Host,
     components: &[RuntimeComponent],
-    effects: &mut Vec<EffectBody>,
+    effects: &mut Vec<EffectJob>,
     this_arg: Option<&Value>,
 ) -> Result<Value, RuntimeError> {
     match callee {
@@ -869,6 +1022,39 @@ fn call_value(
             // Event dispatch still exists for the ABI's on* path.
             eval(body, env, frame, host, components, effects)
         }
+        Value::AsyncFn(af) => {
+            // An async call returns a promise; segment 0 runs synchronously
+            // (ECMA: an async fn body runs to its first await inline).
+            // Params bind in a fresh per-call env so concurrent calls of the
+            // same fn have isolated locals.
+            let result = crate::value::PromiseData::new();
+            let mut cenv = af.captured.clone();
+            cenv.push_scope();
+            for (i, p) in af.params.iter().enumerate() {
+                cenv.define(p, args.get(i).cloned().unwrap_or(Value::Undefined));
+            }
+            let fp = frame.path().map(|p| p.to_vec());
+            run_async_step(
+                af.clone(),
+                0,
+                &mut cenv,
+                frame,
+                host,
+                components,
+                effects,
+                result.clone(),
+                fp,
+            );
+            Ok(Value::Promise(result))
+        }
+        Value::Settler { promise, fulfill } => {
+            // `resolve(v)` / `reject(v)` inside a Promise executor: settle
+            // the promise, queueing its handlers as jobs. Settling an
+            // already-settled promise is a no-op (ECMA).
+            let v = args.first().cloned().unwrap_or(Value::Undefined);
+            settle_promise(promise, v, *fulfill, effects);
+            Ok(Value::Undefined)
+        }
         Value::Function {
             params,
             body,
@@ -902,7 +1088,7 @@ fn call_var(
     frame: &mut HookFrame,
     host: &mut dyn Host,
     components: &[RuntimeComponent],
-    effects: &mut Vec<EffectBody>,
+    effects: &mut Vec<EffectJob>,
 ) -> Result<Value, RuntimeError> {
     match name {
         "useState" => {
@@ -939,15 +1125,15 @@ fn call_var(
                 // new setup — both in hook order. Layout effects drain
                 // synchronously (pre-commit); regular effects after the diff.
                 if let Some(old) = old_cleanup {
-                    effects.push(old);
+                    effects.push(EffectJob::Effect(old));
                 }
                 if let JsExpr::Closure { body, .. } = &args[0] {
-                    effects.push(EffectBody {
+                    effects.push(EffectJob::Effect(EffectBody {
                         body: (**body).clone(),
                         env: env.clone(),
                         layout,
                         frame_path: frame.path().map(|p| p.to_vec()),
-                    });
+                    }));
                 }
             }
             Ok(Value::Null)
@@ -1086,6 +1272,11 @@ fn call_var(
                 Value::Setter(_) | Value::Dispatcher { .. } | Value::Ref { .. } => "function",
                 Value::Context { .. } => "object",
                 Value::Pending => "object",
+                // ECMA: promises are objects; async fns are functions; the
+                // settler is an internal callable.
+                Value::Promise(_) => "object",
+                Value::AsyncFn(_) => "function",
+                Value::Settler { .. } => "function",
             }))
         }
         "useRef" => {
@@ -1184,7 +1375,7 @@ fn call_map(
     frame: &mut HookFrame,
     host: &mut dyn Host,
     components: &[RuntimeComponent],
-    effects: &mut Vec<EffectBody>,
+    effects: &mut Vec<EffectJob>,
 ) -> Result<Value, RuntimeError> {
     let arr = eval(base, env, frame, host, components, effects)?;
     let arr = match arr {
@@ -1221,7 +1412,7 @@ fn call_filter(
     frame: &mut HookFrame,
     host: &mut dyn Host,
     components: &[RuntimeComponent],
-    effects: &mut Vec<EffectBody>,
+    effects: &mut Vec<EffectJob>,
 ) -> Result<Value, RuntimeError> {
     let arr = eval(base, env, frame, host, components, effects)?;
     let arr = match arr {
@@ -1313,14 +1504,314 @@ fn deps_from_value(v: &Value) -> Vec<Value> {
 
 /// Run a captured effect body (used after commit) against the frame that
 /// owns any hook handles the body references.
+/// One state-machine step of an async fn (M2-T07). Runs segment `seg` in
+/// `call_env`; a terminal await suspends — the resolved value arrives later
+/// as a `EffectJob::Resume` job (scheduler-driven). An error in a segment
+/// rejects the result promise (ECMA: an async fn never throws synchronously).
+#[allow(clippy::too_many_arguments)]
+pub fn run_async_step(
+    af: std::rc::Rc<crate::value::AsyncFnData>,
+    seg: usize,
+    call_env: &mut Env,
+    frame: &mut HookFrame,
+    host: &mut dyn Host,
+    components: &[RuntimeComponent],
+    effects: &mut Vec<EffectJob>,
+    result: std::rc::Rc<std::cell::RefCell<crate::value::PromiseData>>,
+    frame_path: Option<Vec<String>>,
+) {
+    let step = af.segments[seg].clone();
+    let mut outcome: Result<Value, RuntimeError> = Ok(Value::Null);
+    for s in &step.stmts {
+        outcome = eval(s, call_env, frame, host, components, effects);
+        if outcome.is_err() {
+            break;
+        }
+    }
+    match outcome {
+        Err(e) => {
+            // Segment failed: reject the promise with the error value.
+            let v = e.caught_value();
+            settle_promise(&result, v, false, effects);
+        }
+        Ok(v) => {
+            match &step.await_expr {
+                Some(aexpr) => {
+                    // Suspend: the await's promise drives the next step.
+                    let av = eval(aexpr, call_env, frame, host, components, effects);
+                    match av {
+                        Err(e) => {
+                            let v = e.caught_value();
+                            settle_promise(&result, v, false, effects);
+                        }
+                        Ok(Value::Promise(p)) => {
+                            let mut pd = p.borrow_mut();
+                            match &pd.state {
+                                crate::value::PromiseState::Pending => {
+                                    pd.handlers.push(crate::value::Continuation::Resume {
+                                        af,
+                                        seg: seg + 1,
+                                        bind: step.await_bind.clone(),
+                                        completes: step.await_completes,
+                                        call_env: call_env.clone(),
+                                        result,
+                                        frame_path,
+                                    });
+                                }
+                                crate::value::PromiseState::Fulfilled(fv) => {
+                                    let fv = fv.clone();
+                                    drop(pd);
+                                    effects.push(EffectJob::Resume {
+                                        af,
+                                        seg: seg + 1,
+                                        bind: step.await_bind.clone(),
+                                        completes: step.await_completes,
+                                        call_env: call_env.clone(),
+                                        result,
+                                        frame_path,
+                                        incoming: Some(fv),
+                                    });
+                                }
+                                crate::value::PromiseState::Rejected(rv) => {
+                                    let rv = rv.clone();
+                                    drop(pd);
+                                    // A rejected await rejects the async fn's
+                                    // result promise (no local catch of await
+                                    // rejections in the supported surface).
+                                    settle_promise(&result, rv, false, effects);
+                                }
+                            }
+                        }
+                        Ok(other) => {
+                            // `await non-promise` resolves with the value
+                            // itself (ECMA Await wraps via PromiseResolve).
+                            effects.push(EffectJob::Resume {
+                                af,
+                                seg: seg + 1,
+                                bind: step.await_bind.clone(),
+                                completes: step.await_completes,
+                                call_env: call_env.clone(),
+                                result,
+                                frame_path,
+                                incoming: Some(other),
+                            });
+                        }
+                    }
+                }
+                None => {
+                    // Terminal segment: the fn completes with its last
+                    // statement's value — undefined for an empty body
+                    // (ECMA: no return -> undefined).
+                    let done = if step.stmts.is_empty() {
+                        Value::Undefined
+                    } else {
+                        v
+                    };
+                    settle_promise(&result, done, true, effects);
+                }
+            }
+        }
+    }
+}
+
+/// Settle a promise and queue its handlers as jobs (M2-T07). Idempotent
+/// (ECMA: first settle wins). Fulfilling with ANOTHER promise adopts it: the
+/// result stays pending until the source settles (pass-through), and only
+/// that pass-through may complete it (force_settle). Self-adoption rejects
+/// with a TypeError (ECMA).
+pub fn settle_promise(
+    p: &std::rc::Rc<std::cell::RefCell<crate::value::PromiseData>>,
+    value: Value,
+    fulfilled: bool,
+    effects: &mut Vec<EffectJob>,
+) {
+    let mut pd = p.borrow_mut();
+    if pd.settled {
+        return;
+    }
+    if fulfilled {
+        if let Value::Promise(other) = &value {
+            pd.settled = true; // first resolve wins, even during adoption
+            if std::rc::Rc::ptr_eq(p, other) {
+                pd.state = crate::value::PromiseState::Rejected(Value::from_str_utf8(
+                    "Chaining cycle detected for promise",
+                ));
+                let handlers = std::mem::take(&mut pd.handlers);
+                drop(pd);
+                for h in handlers {
+                    push_handler_job(h, &value, true, effects);
+                }
+            } else {
+                let already = {
+                    let mut od = other.borrow_mut();
+                    match &od.state {
+                        crate::value::PromiseState::Pending => {
+                            od.handlers.push(crate::value::Continuation::Then {
+                                on_ok: None,
+                                on_err: None,
+                                env: Env::new(),
+                                result: p.clone(),
+                                frame_path: None,
+                            });
+                            None
+                        }
+                        crate::value::PromiseState::Fulfilled(v) => Some((v.clone(), false)),
+                        crate::value::PromiseState::Rejected(v) => Some((v.clone(), true)),
+                    }
+                };
+                drop(pd);
+                if let Some((v, rej)) = already {
+                    effects.push(EffectJob::Then {
+                        on_ok: None,
+                        on_err: None,
+                        env: Env::new(),
+                        value: v,
+                        rejected: rej,
+                        result: p.clone(),
+                        frame_path: None,
+                    });
+                }
+                // Handlers stay queued on p; the pass-through completes it.
+            }
+            return;
+        }
+    }
+    pd.settled = true;
+    pd.state = if fulfilled {
+        crate::value::PromiseState::Fulfilled(value.clone())
+    } else {
+        crate::value::PromiseState::Rejected(value.clone())
+    };
+    let handlers = std::mem::take(&mut pd.handlers);
+    drop(pd);
+    for h in handlers {
+        push_handler_job(h, &value, !fulfilled, effects);
+    }
+}
+
+/// Complete an ADOPTING promise with its source's settled value. Only the
+/// pass-through continuation reaches this (settle_promise is blocked by the
+/// settled flag the adoption set).
+fn force_settle(
+    p: &std::rc::Rc<std::cell::RefCell<crate::value::PromiseData>>,
+    value: Value,
+    fulfilled: bool,
+    effects: &mut Vec<EffectJob>,
+) {
+    let handlers = {
+        let mut pd = p.borrow_mut();
+        pd.state = if fulfilled {
+            crate::value::PromiseState::Fulfilled(value.clone())
+        } else {
+            crate::value::PromiseState::Rejected(value.clone())
+        };
+        std::mem::take(&mut pd.handlers)
+    };
+    for h in handlers {
+        push_handler_job(h, &value, !fulfilled, effects);
+    }
+}
+
+fn push_handler_job(
+    h: crate::value::Continuation,
+    value: &Value,
+    rejected: bool,
+    effects: &mut Vec<EffectJob>,
+) {
+    match h {
+        crate::value::Continuation::Then {
+            on_ok,
+            on_err,
+            env,
+            result,
+            frame_path,
+        } => effects.push(EffectJob::Then {
+            on_ok,
+            on_err,
+            env,
+            value: value.clone(),
+            rejected,
+            result,
+            frame_path,
+        }),
+        crate::value::Continuation::Resume {
+            af,
+            seg,
+            bind,
+            completes,
+            call_env,
+            result,
+            frame_path,
+        } => effects.push(EffectJob::Resume {
+            af,
+            seg,
+            bind,
+            completes,
+            call_env,
+            result,
+            frame_path,
+            incoming: Some(value.clone()),
+        }),
+    }
+}
+
+/// Complete a promise from a pass-through continuation: an ADOPTING promise
+/// (settled but state Pending) is force-completed; a normal pass-through
+/// settles normally.
+pub fn force_settle_pub(
+    p: &std::rc::Rc<std::cell::RefCell<crate::value::PromiseData>>,
+    value: Value,
+    fulfilled: bool,
+    effects: &mut Vec<EffectJob>,
+) {
+    let adopting = {
+        let pd = p.borrow();
+        pd.settled && matches!(pd.state, crate::value::PromiseState::Pending)
+    };
+    if adopting {
+        force_settle(p, value, fulfilled, effects);
+    } else {
+        settle_promise(p, value, fulfilled, effects);
+    }
+}
+
+/// Extract `(onOk, onErr)` from a `.then(a, b)` argument list. `.then(f)`
+/// is a fulfillment handler only; `.then(f, g)` both. Non-arrow args are a
+/// runtime error (the supported surface passes arrows).
+/// A .then handler: (body, param-name) — None = no handler (pass-through).
+type ThenHandler = Option<(JsExpr, String)>;
+
+fn then_callbacks(args: &[JsExpr]) -> Result<(ThenHandler, ThenHandler), RuntimeError> {
+    let pick = |a: &JsExpr| -> Result<(JsExpr, String), RuntimeError> {
+        match a {
+            JsExpr::Closure { params, body, .. } => {
+                let p = params.first().cloned().unwrap_or_else(|| "$_".to_string());
+                Ok(((**body).clone(), p))
+            }
+            other => Err(RuntimeError::new(format!(
+                ".then expects arrow handlers, got {other:?}"
+            ))),
+        }
+    };
+    let on_ok = match args.first() {
+        Some(a) => Some(pick(a)?),
+        None => None,
+    };
+    let on_err = match args.get(1) {
+        Some(a) => Some(pick(a)?),
+        None => None,
+    };
+    Ok((on_ok, on_err))
+}
+
 pub fn run_effect_body(
     body: &JsExpr,
     env: &mut Env,
     frame: &mut HookFrame,
     host: &mut dyn Host,
     components: &[RuntimeComponent],
-) -> Result<(), RuntimeError> {
+) -> Result<Vec<EffectJob>, RuntimeError> {
     let mut effects = Vec::new();
     eval(body, env, frame, host, components, &mut effects)?;
-    Ok(())
+    Ok(effects)
 }

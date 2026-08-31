@@ -97,6 +97,41 @@ pub struct Effect {
     pub prev_deps: Option<Vec<Value>>,
 }
 
+/// A unit of deferred runtime work (M2-T07): a React effect OR a promise
+/// continuation. Both drain through the same scheduler loop — promise
+/// continuations are scheduler effects, which is what makes async/await
+/// deterministic in a zero-JS runtime.
+#[derive(Debug, Clone)]
+pub enum EffectJob {
+    /// A plain effect body (useEffect/useLayoutEffect setup, cleanup).
+    Effect(EffectBody),
+    /// A `.then` handler whose source promise has settled: run the chosen
+    /// body with `value` bound to its param; the outcome settles `result`
+    /// (fulfilled with the value, rejected on a throw) — ECMA chaining.
+    Then {
+        on_ok: Option<(r2n_ir::js::JsExpr, String)>,
+        on_err: Option<(r2n_ir::js::JsExpr, String)>,
+        env: crate::eval::Env,
+        value: Value,
+        rejected: bool,
+        result: std::rc::Rc<std::cell::RefCell<crate::value::PromiseData>>,
+        frame_path: Option<Vec<String>>,
+    },
+    /// An async-fn state-machine step: bind `incoming` to `bind` (or complete
+    /// the promise when `completes`), run segment `seg`, and suspend at its
+    /// terminal await if it has one.
+    Resume {
+        af: std::rc::Rc<crate::value::AsyncFnData>,
+        seg: usize,
+        bind: Option<String>,
+        completes: bool,
+        call_env: crate::eval::Env,
+        result: std::rc::Rc<std::cell::RefCell<crate::value::PromiseData>>,
+        frame_path: Option<Vec<String>>,
+        incoming: Option<Value>,
+    },
+}
+
 /// A user effect body captured for deferred execution after commit.
 #[derive(Debug, Clone)]
 pub struct EffectBody {
