@@ -1205,3 +1205,56 @@ also pins ToNumber/ToString/ToBoolean across the value model from T01.
 **CHOSE**
 Full ECMA ladder with identity where the representation supports it, one
 documented divergence. 10 tests; suite 196; records (M2 5/15, 59/106).
+
+## 2026-08-31 — Entry 28: M2-T06 Exceptions (try/catch/finally)
+
+**PLAN**
+The evaluator had no exception path: every RuntimeError was a String that
+propagated to the top unconditionally. T06 adds real JS exceptions — any
+VALUE throwable, catchable at any enclosing try, finally on every path.
+
+**WHAT**
+- Full stack: AST `Throw/Try` -> both parser twins (`throw`/`try`/`catch`/
+  `finally` as expression-form primaries; optional catch binding) ->
+  `JsExpr::Throw/Try` -> lowering (subst_expr skips the catch body when the
+  param shadows the substitution name; collect_free treats the param as a
+  binder) -> eval.
+- RuntimeError now carries the thrown JS value: `RuntimeError::thrown(v)`
+  (message = String(v), Error objects use `message`), `caught_value()`
+  binds it verbatim in catch; internal (Rust-level) errors bind their
+  message string — ECMA ReferenceError parity.
+- eval Try: catch runs in a pushed scope (param binds there, pops after);
+  finally runs on EVERY path; an error raised IN finally replaces the
+  pending outcome (ECMA completion semantics; no return-completion in the
+  expression IR, so no return-override case exists).
+- `Error(message)` / `new Error(msg)` builtin: Error-shaped object
+  ({name: "Error", message}).
+- Uncaught throws surface at flush/dispatch as before — error boundaries
+  (M1-T13) still capture render-time throws; the test pins the interplay
+  (thrown message flows through getDerivedStateFromError -> fallback).
+- FOUND & FIXED while testing: `Env::assign` — assignments used `define`
+  (current-scope insert), so an assignment inside a catch block (or any
+  nested scope, e.g. a closure body) SHADOWED the outer binding instead of
+  updating it. JS assignment semantics = nearest existing binding, walked
+  outer scopes first. `define` remains the declaration path.
+
+**WHY**
+try/catch is how real code handles failure (fetch wrappers, JSON.parse,
+localStorage guards); without it the compatibility layer cannot run
+libraries that guard their callsites. The nearest-binding assign fix is
+independently load-bearing: EVERY nested-scope assignment was silently
+broken before.
+
+**OPTIONS**
+- Represent internal errors as Error objects eagerly: rejected — internal
+  errors have no JS value identity yet; binding the message string is
+  ECMA-observable enough for catch logging, and the Error class task
+  (M6-adjacent) upgrades it.
+- try/catch as statement-level only: rejected — the IR is
+  expression-oriented (Block/If/Assign are expressions); statement forms
+  would need a second completion channel. Expression-forms compose with
+  arrows and method bodies for free.
+
+**CHOSE**
+Value-carrying RuntimeError + expression-form try. 12 tests; suite 208;
+records (M2 6/15, 60/106).

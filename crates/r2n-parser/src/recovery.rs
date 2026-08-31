@@ -716,6 +716,13 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                     Ok(e)
                 }
             }
+            TokenKind::Ident(name) if name == "throw" => {
+                // `throw value` (mirrors parser.rs).
+                self.bump();
+                let value = self.parse_expr()?;
+                Ok(Expr::Throw(Box::new(value)))
+            }
+            TokenKind::Ident(name) if name == "try" => self.parse_try(),
             TokenKind::Ident(name) if name == "if" => {
                 self.bump();
                 let cond = self.parse_expr()?;
@@ -795,6 +802,74 @@ impl<'e, 'a> SpanParser<'e, 'a> {
         } else {
             self.parse_expr()
         }
+    }
+
+    /// Parse `{ stmts }` (mirrors parser.rs); consumes both braces.
+    fn parse_block_stmts(&mut self) -> Result<Vec<Expr>, ParseError> {
+        self.expect(TokenKind::LeftBrace)?;
+        let mut stmts = Vec::new();
+        while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
+            if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "return") {
+                self.bump();
+                stmts.push(self.parse_expr()?);
+                if self.check(&TokenKind::Semicolon) {
+                    self.bump();
+                }
+                break;
+            }
+            if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "let" || kw == "const") {
+                self.bump();
+                let name = self.expect_ident()?;
+                self.expect(TokenKind::Equals)?;
+                let value = self.parse_expr()?;
+                if self.check(&TokenKind::Semicolon) {
+                    self.bump();
+                }
+                stmts.push(Expr::Assign {
+                    target: Box::new(Expr::Ident {
+                        name,
+                        is_component: false,
+                    }),
+                    value: Box::new(value),
+                });
+                continue;
+            }
+            stmts.push(self.parse_expr()?);
+            if self.check(&TokenKind::Semicolon) {
+                self.bump();
+            }
+        }
+        self.expect(TokenKind::RightBrace)?;
+        Ok(stmts)
+    }
+
+    /// `try { } catch (e) { } finally { }` (mirrors parser.rs).
+    fn parse_try(&mut self) -> Result<Expr, ParseError> {
+        self.bump(); // `try`
+        let block = self.parse_block_stmts()?;
+        let (mut catch_param, mut catch, mut finally) = (None, None, None);
+        if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "catch") {
+            self.bump();
+            if self.check(&TokenKind::LeftParen) {
+                self.bump();
+                catch_param = Some(self.expect_ident()?);
+                self.expect(TokenKind::RightParen)?;
+            }
+            catch = Some(self.parse_block_stmts()?);
+        }
+        if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "finally") {
+            self.bump();
+            finally = Some(self.parse_block_stmts()?);
+        }
+        if catch.is_none() && finally.is_none() {
+            return Err(self.err("try requires a catch or finally block"));
+        }
+        Ok(Expr::Try {
+            block,
+            catch_param,
+            catch,
+            finally,
+        })
     }
 
     fn parse_array(&mut self) -> Result<Expr, ParseError> {

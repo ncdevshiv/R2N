@@ -65,6 +65,18 @@ pub enum JsExpr {
         target: Box<JsExpr>,
         value: Box<JsExpr>,
     },
+    /// `throw value` — raises `value` to the nearest enclosing `Try` (M2-T06).
+    Throw { value: Box<JsExpr> },
+    /// `try { block } catch (param) { catch } finally { finally }`. The catch
+    /// scope binds `param` to the thrown value; at least one of catch/finally
+    /// is present (parser enforces). Finally runs on every path; an error
+    /// raised IN the finally replaces any pending outcome.
+    Try {
+        block: Vec<JsExpr>,
+        catch_param: Option<String>,
+        catch: Option<Vec<JsExpr>>,
+        finally: Option<Vec<JsExpr>>,
+    },
     /// Reference to a builtin by name (e.g. `"useState"`, `"items.map"` is a
     /// member call, not a builtin). Builtins are resolved by the runtime.
     Builtin(String),

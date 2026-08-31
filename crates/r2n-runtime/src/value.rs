@@ -320,24 +320,61 @@ pub fn format_number(n: f64) -> String {
     }
 }
 
-/// Type errors raised by evaluation (e.g. calling a non-function).
+/// Type errors raised by evaluation (e.g. calling a non-function), and the
+/// carrier for JS `throw` — any value can be thrown, so the error carries it.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RuntimeError(String);
+pub struct RuntimeError {
+    message: String,
+    /// The JS value in flight (`throw x`). `None` for internal type errors,
+    /// which a catch binds as their message string (ECMA maps internal errors
+    /// to Error instances; ours surface as strings until a full Error class
+    /// lands — `throw new Error(msg)` already produces a real Error object).
+    thrown: Option<Value>,
+}
 
 impl RuntimeError {
     pub fn new(msg: impl Into<String>) -> Self {
-        Self(msg.into())
+        Self {
+            message: msg.into(),
+            thrown: None,
+        }
+    }
+
+    /// Raise `value` (JS `throw value`). The message mirrors String(value):
+    /// thrown strings bind as themselves; Error-shaped objects use their
+    /// `message` prop.
+    pub fn thrown(value: Value) -> Self {
+        let message = match &value {
+            Value::Str(u) => String::from_utf16_lossy(u),
+            Value::Object(o) => match o.borrow().props.get("message") {
+                Some(Value::Str(m)) => String::from_utf16_lossy(m),
+                _ => value.display(),
+            },
+            other => other.display(),
+        };
+        Self {
+            message,
+            thrown: Some(value),
+        }
+    }
+
+    /// The value a `catch` clause binds: the thrown value verbatim, or the
+    /// message string for internal (Rust-level) errors.
+    pub fn caught_value(&self) -> Value {
+        self.thrown
+            .clone()
+            .unwrap_or_else(|| Value::from_str_utf8(&self.message))
     }
 
     /// The error message (for error boundaries: `componentDidCatch(err)`).
     pub fn error_text(&self) -> &str {
-        &self.0
+        &self.message
     }
 }
 
 impl fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "runtime error: {}", self.0)
+        write!(f, "runtime error: {}", self.message)
     }
 }
 
