@@ -729,7 +729,7 @@ fn call_filter(
 /// `layout` is the effect's own phase: the cleanup belongs to the SAME
 /// hook slot, so a useLayoutEffect cleanup is a layout cleanup (it must
 /// run in the same queue as its setup, immediately before it).
-fn cleanup_of(
+pub fn cleanup_of(
     body: &JsExpr,
     env: &Env,
     layout: bool,

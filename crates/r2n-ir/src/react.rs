@@ -58,6 +58,10 @@ pub enum ReactNode {
         fallback: Box<ReactNode>,
         children: Vec<ReactNode>,
     },
+    /// `<StrictMode>`: in dev builds the runtime double-invokes effects
+    /// inside the subtree (mount → cleanup → mount) to surface impurity;
+    /// production builds strip the node (it lowers away to plain children).
+    StrictMode { children: Vec<ReactNode> },
     /// A portal: `<Portal target="class">` — the children render under the
     /// first host element with `className == target` (the RENDERING
     /// parent), while identity, keys, and event dispatch follow the

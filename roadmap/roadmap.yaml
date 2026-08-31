@@ -305,7 +305,7 @@ phases:
       - id: "M1-T16"
         title: "StrictMode dev-only semantics kept out of production artifacts"
         priority: "P1"
-        done: false
+        done: true
       - id: "M1-T17"
         title: "Conformance suite v1 — behavioral tests (observable behavior, not API presence)"
         priority: "P0"

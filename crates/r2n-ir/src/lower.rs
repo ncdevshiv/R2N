@@ -48,8 +48,18 @@ impl std::fmt::Display for LowerError {
 
 impl std::error::Error for LowerError {}
 
-/// Lower a whole program into a runtime template.
+/// Lower a whole program into a runtime template. Production: StrictMode
+/// nodes are STRIPPED (dev semantics must not reach production artifacts).
 pub fn lower(program: &Program) -> Result<RuntimeTemplate, LowerError> {
+    lower_with(program, false)
+}
+
+/// Dev-mode lowering: keeps StrictMode nodes and marks the template.
+pub fn lower_dev(program: &Program) -> Result<RuntimeTemplate, LowerError> {
+    lower_with(program, true)
+}
+
+fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, LowerError> {
     // 1. Build the component name -> index table.
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut components: Vec<RuntimeComponent> = Vec::new();
@@ -91,11 +101,81 @@ pub fn lower(program: &Program) -> Result<RuntimeTemplate, LowerError> {
         }
     }
 
-    Ok(RuntimeTemplate {
+    let mut template = RuntimeTemplate {
         components,
         root,
         manifest: RuntimeTemplate::new().manifest,
-    })
+        strict_mode: false,
+    };
+    if !strict_mode {
+        // Production: the dev-only marker never crosses the artifact.
+        for comp in &mut template.components {
+            let b = std::mem::replace(
+                &mut comp.body,
+                ReactNode::Text(JsExpr::Lit(r2n_ast::lit::Literal::Null)),
+            );
+            comp.body = strip_strict(b);
+        }
+    } else {
+        // Dev: effects inside StrictMode subtrees double-invoke.
+        template.strict_mode = true;
+    }
+    Ok(template)
+}
+
+/// Remove `<StrictMode>` wrappers (dev semantics out of production).
+fn strip_strict(n: ReactNode) -> ReactNode {
+    match n {
+        ReactNode::StrictMode { children } => {
+            // Transparent: children splice where the wrapper sat.
+            ReactNode::Fragment {
+                key: None,
+                children: children.into_iter().map(strip_strict).collect(),
+            }
+        }
+        ReactNode::Host {
+            tag,
+            props,
+            children,
+        } => ReactNode::Host {
+            tag,
+            props,
+            children: children.into_iter().map(strip_strict).collect(),
+        },
+        ReactNode::Component { component, props } => ReactNode::Component { component, props },
+        ReactNode::If { cond, then, else_ } => ReactNode::If {
+            cond,
+            then: Box::new(strip_strict(*then)),
+            else_: Box::new(strip_strict(*else_)),
+        },
+        ReactNode::List {
+            items,
+            key_expr,
+            item,
+        } => ReactNode::List {
+            items,
+            key_expr,
+            item: Box::new(strip_strict(*item)),
+        },
+        ReactNode::ContextProvider {
+            ctx,
+            value,
+            children,
+        } => ReactNode::ContextProvider {
+            ctx,
+            value,
+            children: children.into_iter().map(strip_strict).collect(),
+        },
+        ReactNode::Portal { target, children } => ReactNode::Portal {
+            target,
+            children: children.into_iter().map(strip_strict).collect(),
+        },
+        ReactNode::Suspense { fallback, children } => ReactNode::Suspense {
+            fallback: Box::new(strip_strict(*fallback)),
+            children: children.into_iter().map(strip_strict).collect(),
+        },
+        other => other,
+    }
 }
 
 /// A component body being lowered: an ordered list of render-time steps.
@@ -143,6 +223,7 @@ fn lower_component(
             | ReactNode::ContextProvider { .. }
             | ReactNode::Portal { .. }
             | ReactNode::Suspense { .. }
+            | ReactNode::StrictMode { .. }
     ) {
         return Err(LowerError::NonRenderableReturn(format!(
             "component {} returns a non-renderable expression",
@@ -420,6 +501,16 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
             children.push(lower_child(child, index)?);
         }
         return Ok(ReactNode::Fragment { key, children });
+    }
+
+    // StrictMode: a transparent marker node (dev double-invoke behavior).
+    if e.tag == "StrictMode" {
+        let children = e
+            .children
+            .iter()
+            .map(|c| lower_child(c, index))
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(ReactNode::StrictMode { children });
     }
 
     // Suspense: `<Suspense fallback={...}>` — a special tag, not a
@@ -811,6 +902,12 @@ fn subst_node(n: ReactNode, from: &str, to: &str) -> ReactNode {
                 .map(|c| subst_node(c, from, to))
                 .collect(),
         },
+        ReactNode::StrictMode { children } => ReactNode::StrictMode {
+            children: children
+                .into_iter()
+                .map(|c| subst_node(c, from, to))
+                .collect(),
+        },
         ReactNode::Suspense { fallback, children } => ReactNode::Suspense {
             fallback: Box::new(subst_node(*fallback, from, to)),
             children: children
@@ -940,6 +1037,11 @@ fn collect_free_node(
         } => {
             collect_free(ctx, bound, out);
             collect_free(value, bound, out);
+            for c in children {
+                collect_free_node(c, bound, out);
+            }
+        }
+        ReactNode::StrictMode { children } => {
             for c in children {
                 collect_free_node(c, bound, out);
             }

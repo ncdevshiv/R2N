@@ -929,3 +929,34 @@ timer.
 **CHOSE**
 State-driven pending source + recursive marker scan. 4 tests; suite 149;
 records updated (M1 15/18, 51/106).
+
+## 2026-08-30 — Entry 21: M1-T16 StrictMode
+
+**PLAN**
+React dev-only double-invocation semantics (effects run setup → cleanup →
+setup to surface impurity) must NEVER reach production artifacts. Two
+builds: dev (behavior on) and production (marker stripped, flag absent).
+
+**WHAT**
+- `ReactNode::StrictMode` — a transparent wrapper node; `RuntimeTemplate
+  .strict_mode` flag (serde default false — the artifact omits it).
+- `lower()` (production) STRIPS StrictMode nodes into fragments — test
+  asserts the serialized JSON contains no "StrictMode"; `lower_dev()`
+  keeps the node and sets the flag; `compile_source_dev` compiles for dev.
+- Runtime: dev artifacts double-invoke layout AND passive effects
+  (`run_effects`/`run_layout_effects` get `strict`); the double pass runs
+  the body, extracts its value-position cleanup and runs it, then runs
+  the body again — the observable React dev cycle, log-verified.
+
+**WHY**
+The "kept out of production artifacts" requirement is structural: it's not
+enough to HAVE dev semantics; the production artifact must not be able to
+carry them (byte-level: JSON has no StrictMode marker, no flag).
+
+**OPTIONS**
+- Runtime-level toggle: rejected — the ARTIFACT must be provably clean;
+  serialization-level stripping is the verifiable guarantee.
+
+**CHOSE**
+Serialization-level production stripping + dev flag. 4 tests; suite 153;
+records updated (M1 16/18, 52/106).
