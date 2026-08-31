@@ -499,6 +499,8 @@ fn lower_binop(op: BinOp) -> JsBinOp {
         BinOp::Mod => JsBinOp::Mod,
         BinOp::Eq => JsBinOp::Eq,
         BinOp::Neq => JsBinOp::Neq,
+        BinOp::StrictEq => JsBinOp::StrictEq,
+        BinOp::StrictNeq => JsBinOp::StrictNeq,
         BinOp::Lt => JsBinOp::Lt,
         BinOp::Gt => JsBinOp::Gt,
         BinOp::Le => JsBinOp::Le,

@@ -6,7 +6,7 @@
 |---|---|
 | Version | 1.0 |
 | Updated | 2026-08-30 |
-| Status | M0.1–M0.3 done · M1 done (18/18) · M2 in progress (4/15) · 58/106 tasks |
+| Status | M0.1–M0.3 done · M1 done (18/18) · M2 in progress (5/15) · 59/106 tasks |
 | Horizon | 56 weeks, 10 milestones, 106 tracked tasks |
 | Interactive tracker | [index.html](index.html) |
 | Machine-readable | [roadmap.yaml](roadmap.yaml) · [roadmap.toml](roadmap.toml) |

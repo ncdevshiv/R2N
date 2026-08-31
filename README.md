@@ -29,7 +29,7 @@ source (.r2n)  →  Lexer  →  Parser (AST)  →  Lowering  →  JS IR ─┐
 | M2 JavaScript compatibility — full ECMAScript semantics | in progress | 4/15 |
 | M3–M7 | planned | — |
 
-**Overall: 58/106 roadmap tasks.** Every claim above is backed by the test suite (`cargo test`) and the architecture-guard tests. See [roadmap/CHECKLIST.md](roadmap/CHECKLIST.md) for the task-level record, [JOURNAL.md](JOURNAL.md) for decision history, and [docs/AUDIT.md](docs/AUDIT.md) for the latest audit report.
+**Overall: 59/106 roadmap tasks.** Every claim above is backed by the test suite (`cargo test`) and the architecture-guard tests. See [roadmap/CHECKLIST.md](roadmap/CHECKLIST.md) for the task-level record, [JOURNAL.md](JOURNAL.md) for decision history, and [docs/AUDIT.md](docs/AUDIT.md) for the latest audit report.
 
 ### What works today (all test-verified)
 

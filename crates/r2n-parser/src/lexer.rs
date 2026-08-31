@@ -41,7 +41,9 @@ pub enum TokenKind {
     Percent,
     Bang,
     EqEq,
+    EqEqEq,
     BangEq,
+    BangEqEq,
     LtEq,
     GtEq,
     AmpAmp,
@@ -81,7 +83,9 @@ impl TokenKind {
             TokenKind::Percent => "`%`".into(),
             TokenKind::Bang => "`!`".into(),
             TokenKind::EqEq => "`==`".into(),
+            TokenKind::EqEqEq => "`===`".into(),
             TokenKind::BangEq => "`!=`".into(),
+            TokenKind::BangEqEq => "`!==`".into(),
             TokenKind::LtEq => "`<=`".into(),
             TokenKind::GtEq => "`>=`".into(),
             TokenKind::AmpAmp => "`&&`".into(),
@@ -441,8 +445,20 @@ impl<'a> Lexer<'a> {
     fn try_two_char(&mut self) -> Result<Option<Token>, ParseError> {
         let c = self.rest.chars().next().unwrap();
         let kind = match c {
-            '=' if self.rest.chars().nth(1) == Some('=') => Some(TokenKind::EqEq),
-            '!' if self.rest.chars().nth(1) == Some('=') => Some(TokenKind::BangEq),
+            '=' if self.rest.chars().nth(1) == Some('=') => {
+                if self.rest.chars().nth(2) == Some('=') {
+                    Some(TokenKind::EqEqEq)
+                } else {
+                    Some(TokenKind::EqEq)
+                }
+            }
+            '!' if self.rest.chars().nth(1) == Some('=') => {
+                if self.rest.chars().nth(2) == Some('=') {
+                    Some(TokenKind::BangEqEq)
+                } else {
+                    Some(TokenKind::BangEq)
+                }
+            }
             '<' if self.rest.chars().nth(1) == Some('=') => Some(TokenKind::LtEq),
             '>' if self.rest.chars().nth(1) == Some('=') => Some(TokenKind::GtEq),
             '&' if self.rest.chars().nth(1) == Some('&') => Some(TokenKind::AmpAmp),
@@ -453,9 +469,15 @@ impl<'a> Lexer<'a> {
         };
         if let Some(kind) = kind {
             let tok = self.tok(kind);
-            // consume both chars
-            self.consume_char();
-            self.consume_char();
+            // `===` / `!==` are three chars; every other match here is two.
+            let width = if matches!(tok.kind, TokenKind::EqEqEq | TokenKind::BangEqEq) {
+                3
+            } else {
+                2
+            };
+            for _ in 0..width {
+                self.consume_char();
+            }
             Ok(Some(tok))
         } else {
             Ok(None)
