@@ -1039,3 +1039,40 @@ ECMAScript behavior, not merely more enum arms.
 Full vocabulary + ECMA conversions + real first-class functions.
 7 tests (tests/value_model.rs); suite 170; records updated
 (M2 1/15, 55/106).
+
+## 2026-08-31 — Entry 24: M2-T02 Objects & Prototypes
+
+**PLAN**
+ECMAScript object semantics beyond T01's flat bag: a real prototype chain.
+`Value::Object` becomes `Rc<RefCell<ObjData>>` — own props + `proto` link.
+Reads walk the chain; writes create own data props; `Object.create /
+getPrototypeOf / __proto__` read+write; typeof("object") parity.
+
+**WHAT**
+- `ObjData { props, proto }`; chain-walking reads in both `get_prop` and
+  `index_prop` (own first, then ancestors; missing → undefined).
+- Writes: `o.x = v` sets OWN prop (shadows the proto); `o.__proto__ = p`
+  sets the link (object or null; other values are a runtime error).
+- `Object()` constructor, `Object.create(proto)` / `Object.create(null)`,
+  `Object.getPrototypeOf(o)`, `__proto__` read (`null` when no proto) all
+  implemented as member-call special cases + accessor arms.
+- Test catches: the first attempt routed `Object.create` through the
+  `Object` constructor (wrong — they are member calls); `__proto__` read
+  arm didn't land in `get_prop`, so a smoke showed "cannot read .name on
+  undefined"; and `typeof(null)` is "object" (ECMA) — asserting raw `null`
+  rendering confused the first test draft. All pinned.
+
+**WHY**
+Prototypes are the class/`this`/inheritance foundation (T04 needs them),
+and the only honest way to claim "objects" beyond a map alias: identity,
+chain-walking reads, own-prop shadowing are the observable semantics.
+
+**OPTIONS**
+- Object as immutable map + copy-on-write: rejected — identity semantics
+  (two refs to one object) are the point; `Rc<RefCell>` matches.
+- Shape-friendly arrays-of-props: deferred to the optimizer (M3) — the
+  layout is internal; the observable chain semantics come first.
+
+**CHOSE**
+Reference-object with a real proto chain. 6 tests; suite 176; records
+updated (M2 2/15, 56/106).

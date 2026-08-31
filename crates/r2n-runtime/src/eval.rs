@@ -123,11 +123,24 @@ pub fn eval(
                             frame.write_ref(*slot, v.clone());
                             Ok(v)
                         }
-                        // Object member writes set the property. (Value::Map
-                        // is a plain (non-shared) props bag — immutable in
-                        // this subset; the mutable bag is Object.)
+                        // Object member writes set an OWN property (ECMA
+                        // data-prop creation). `__proto__ = proto` sets the
+                        // chain link (null clears it).
+                        (Value::Object(o), "__proto__") => {
+                            let mut b = o.borrow_mut();
+                            b.proto = match &v {
+                                Value::Object(p) => Some(p.clone()),
+                                Value::Null => None,
+                                _ => {
+                                    return Err(RuntimeError::new(
+                                        "__proto__ must be an object or null",
+                                    ))
+                                }
+                            };
+                            Ok(v)
+                        }
                         (Value::Object(o), p) => {
-                            o.borrow_mut().insert(p.to_string(), v.clone());
+                            o.borrow_mut().set_own(p.to_string(), v.clone());
                             Ok(v)
                         }
                         _ => Err(RuntimeError::new(format!("cannot assign to {prop} on {b}"))),
@@ -180,6 +193,46 @@ pub fn eval(
         }
         JsExpr::Call { callee, args } => {
             if let JsExpr::Get { base, prop } = &**callee {
+                // Object.create(proto) / Object.getPrototypeOf(obj).
+                if let JsExpr::Var(o) = &**base {
+                    if o == "Object" && prop == "create" {
+                        let p = if let Some(a) = args.first() {
+                            eval(a, env, frame, host, components, effects)?
+                        } else {
+                            Value::Undefined
+                        };
+                        return match p {
+                            Value::Object(proto) => Ok(Value::Object(std::rc::Rc::new(
+                                std::cell::RefCell::new(crate::value::ObjData {
+                                    props: BTreeMap::new(),
+                                    proto: Some(proto),
+                                }),
+                            ))),
+                            Value::Null => Ok(Value::Object(std::rc::Rc::new(
+                                std::cell::RefCell::new(crate::value::ObjData::new()),
+                            ))),
+                            other => Err(RuntimeError::new(format!(
+                                "Object.create: {other} is not an object"
+                            ))),
+                        };
+                    }
+                    if o == "Object" && prop == "getPrototypeOf" {
+                        let v = if let Some(a) = args.first() {
+                            eval(a, env, frame, host, components, effects)?
+                        } else {
+                            Value::Undefined
+                        };
+                        return match &v {
+                            Value::Object(obj) => match &obj.borrow().proto {
+                                Some(p) => Ok(Value::Object(p.clone())),
+                                None => Ok(Value::Null),
+                            },
+                            other => Err(RuntimeError::new(format!(
+                                "getPrototypeOf: {other} is not an object"
+                            ))),
+                        };
+                    }
+                }
                 if prop == "map" && args.len() == 1 {
                     return call_map(base, &args[0], env, frame, host, components, effects);
                 }
@@ -271,9 +324,22 @@ fn lit_to_value(l: &r2n_ir::value::Literal) -> Value {
 fn get_prop(base: &Value, prop: &str) -> Result<Value, RuntimeError> {
     match base {
         Value::Map(m) => Ok(m.get(prop).cloned().unwrap_or(Value::Null)),
+        Value::Object(o) if prop == "__proto__" => match &o.borrow().proto {
+            Some(p) => Ok(Value::Object(p.clone())),
+            None => Ok(Value::Null),
+        },
         Value::Object(o) => {
-            let b = o.borrow();
-            Ok(b.get(prop).cloned().unwrap_or(Value::Undefined))
+            // Walk the prototype chain (own prop first); missing -> undefined.
+            let mut cur: Option<std::rc::Rc<std::cell::RefCell<crate::value::ObjData>>> =
+                Some(o.clone());
+            while let Some(c) = cur {
+                let b = c.borrow();
+                if let Some(v) = b.props.get(prop) {
+                    return Ok(v.clone());
+                }
+                cur = b.proto.clone();
+            }
+            Ok(Value::Undefined)
         }
         Value::Str(u) if prop == "length" => Ok(Value::Number(u.len() as f64)),
         Value::Array(a) if prop == "length" => Ok(Value::Number(a.len() as f64)),
@@ -303,8 +369,16 @@ fn index_prop(base: &Value, key: &Value) -> Result<Value, RuntimeError> {
         }
         Value::Object(o) => {
             let k = key.as_str_utf8().unwrap_or_else(|| key.display());
-            let b = o.borrow();
-            Ok(b.get(&k).cloned().unwrap_or(Value::Undefined))
+            let mut cur: Option<std::rc::Rc<std::cell::RefCell<crate::value::ObjData>>> =
+                Some(o.clone());
+            while let Some(c) = cur {
+                let b = c.borrow();
+                if let Some(v) = b.props.get(&k) {
+                    return Ok(v.clone());
+                }
+                cur = b.proto.clone();
+            }
+            Ok(Value::Undefined)
         }
         other => Err(RuntimeError::new(format!("cannot index {other}"))),
     }
@@ -644,9 +718,12 @@ fn call_var(
             };
             Ok(Value::Symbol(new_symbol(key)))
         }
-        "Object" => Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
-            BTreeMap::new(),
-        )))),
+        "Object" => {
+            // Object() constructor: an empty object (proto None).
+            Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
+                crate::value::ObjData::new(),
+            ))))
+        }
         "typeof" => {
             let v = if let Some(a) = args.first() {
                 eval(a, env, frame, host, components, effects)?

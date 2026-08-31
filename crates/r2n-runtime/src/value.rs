@@ -28,6 +28,30 @@ impl Symbol {
     }
 }
 
+/// Object data: own properties and the prototype link (None = no
+/// prototype — `Object.create(null)` semantics).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ObjData {
+    pub props: BTreeMap<String, Value>,
+    pub proto: Option<std::rc::Rc<std::cell::RefCell<ObjData>>>,
+}
+
+impl ObjData {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Own property lookup.
+    pub fn get_own(&self, prop: &str) -> Option<Value> {
+        self.props.get(prop).cloned()
+    }
+
+    /// Set an own property (ECMA: writes create own data props).
+    pub fn set_own(&mut self, prop: String, value: Value) {
+        self.props.insert(prop, value);
+    }
+}
+
 /// A runtime value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -43,9 +67,9 @@ pub enum Value {
     /// symbols are distinct, like `Symbol()`); registered symbols via
     /// `Symbol.for` share by key.
     Symbol(Symbol),
-    /// General JS object: dynamic string-keyed properties (prototype
-    /// semantics arrive with M2-T02).
-    Object(std::rc::Rc<std::cell::RefCell<BTreeMap<String, Value>>>),
+    /// General JS object: dynamic string-keyed properties plus a prototype
+    /// chain (M2-T02). Reads walk the chain; writes create own properties.
+    Object(std::rc::Rc<std::cell::RefCell<ObjData>>),
     /// A first-class function value: params + body (a `JsExpr`) invoked
     /// against the caller's env; lexical capture arrives with M2-T03.
     Function {
