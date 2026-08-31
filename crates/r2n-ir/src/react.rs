@@ -51,6 +51,13 @@ pub enum ReactNode {
         value: JsExpr,
         children: Vec<ReactNode>,
     },
+    /// Suspense: `<Suspense fallback={...}>children</Suspense>` — when a
+    /// child reads a `Value::Pending` resource, the fallback renders until
+    /// the resource resolves (Active → Suspended → Resolved).
+    Suspense {
+        fallback: Box<ReactNode>,
+        children: Vec<ReactNode>,
+    },
     /// A portal: `<Portal target="class">` — the children render under the
     /// first host element with `className == target` (the RENDERING
     /// parent), while identity, keys, and event dispatch follow the

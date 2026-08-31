@@ -47,6 +47,11 @@ pub enum RenderedNode {
         text: String,
         key: String,
     },
+    /// A suspension marker: a render READ a Pending value. The nearest
+    /// `<Suspense>` swaps this subtree for its fallback.
+    Suspended {
+        key: String,
+    },
     /// A portal: children attach to a HOST ELEMENT OUTSIDE their logical
     /// position (found by `className == target`), while identity follows
     /// position. The diff resolves the render parent id.
@@ -536,6 +541,11 @@ fn render_node(
             // Text path — a falsy short-circuit result disappears). Numbers
             // (including 0) and strings render — the classic `0` footgun is
             // React parity, deliberately preserved.
+            if matches!(v, Value::Pending) {
+                return Ok(RenderedNode::Suspended {
+                    key: "susp".to_string(),
+                });
+            }
             if matches!(v, Value::Null | Value::Bool(_)) {
                 return Ok(RenderedNode::Host {
                     tag: FRAGMENT.to_string(),
@@ -864,6 +874,49 @@ fn render_node(
                 key: "frag".to_string(),
             }
         }
+        ReactNode::Suspense { fallback, children } => {
+            // Render the children; if anything read a Pending value, show
+            // the fallback INSTEAD (Active -> Suspended). When the
+            // resource resolves (state flip) the re-render takes the
+            // children branch (Resolved).
+            let mut out = Vec::with_capacity(children.len());
+            let mut suspended = false;
+            for (i, c) in children.iter().enumerate() {
+                let child_node = child_path(node_path, i, &format!("#{i}"));
+                let rc = render_node(
+                    c,
+                    inst_path,
+                    &child_node,
+                    env,
+                    frames,
+                    scopes,
+                    splices,
+                    template,
+                    host,
+                    effects,
+                )?;
+                if contains_suspended(&rc) {
+                    suspended = true;
+                    break;
+                }
+                let mut rc = rc;
+                set_key(&mut rc, &format!("#{i}"));
+                out.push(rc);
+            }
+            if suspended {
+                let fb = render_node(
+                    fallback, inst_path, node_path, env, frames, scopes, splices, template, host,
+                    effects,
+                )?;
+                return Ok(fb);
+            }
+            RenderedNode::Host {
+                tag: FRAGMENT.to_string(),
+                props: Vec::new(),
+                children: out,
+                key: "suspense".to_string(),
+            }
+        }
         ReactNode::Portal { target, children } => {
             let mut out = Vec::with_capacity(children.len());
             for (i, c) in children.iter().enumerate() {
@@ -1051,7 +1104,7 @@ fn resolve_portal_targets(tree: &RenderedNode) -> std::collections::HashMap<Stri
                     walk(c, &cp, out);
                 }
             }
-            RenderedNode::Text { .. } => {}
+            RenderedNode::Text { .. } | RenderedNode::Suspended { .. } => {}
             RenderedNode::Portal { children, .. } => {
                 for (i, c) in children.iter().enumerate() {
                     let cp = child_path(path, i, c.key());
@@ -1092,7 +1145,7 @@ fn preassign_ids(
                 preassign_ids(c, &cp, id_counter, id_map, next_id_map);
             }
         }
-        RenderedNode::Text { .. } => {}
+        RenderedNode::Text { .. } | RenderedNode::Suspended { .. } => {}
     }
 }
 
@@ -1300,6 +1353,10 @@ fn diff_node(
                 );
             }
         }
+        RenderedNode::Suspended { .. } => {
+            // A suspension marker should never reach the diff (the
+            // Suspense arm swaps it for the fallback). Defensive noop.
+        }
         RenderedNode::Text { text, .. } => {
             if let Some(RenderedNode::Text { text: ot, .. }) = old {
                 if ot != text {
@@ -1425,11 +1482,23 @@ fn locate_node<'a>(n: &'a RenderedNode, path: &[String]) -> Option<&'a RenderedN
     for seg in path {
         let children = match cur {
             RenderedNode::Host { children, .. } | RenderedNode::Portal { children, .. } => children,
-            RenderedNode::Text { .. } => return None,
+            RenderedNode::Text { .. } | RenderedNode::Suspended { .. } => return None,
         };
         cur = children.iter().find(|c| c.key() == seg)?;
     }
     Some(cur)
+}
+
+/// Does the rendered subtree contain a Suspended marker anywhere? The
+/// suspension can be deep (a Pending value inside a host's text child).
+fn contains_suspended(n: &RenderedNode) -> bool {
+    match n {
+        RenderedNode::Suspended { .. } => true,
+        RenderedNode::Host { children, .. } | RenderedNode::Portal { children, .. } => {
+            children.iter().any(contains_suspended)
+        }
+        RenderedNode::Text { .. } => false,
+    }
 }
 
 fn remove_recursive(
@@ -1448,7 +1517,7 @@ fn remove_recursive(
                 remove_recursive(id_map, c, &cp, patches);
             }
         }
-        RenderedNode::Text { .. } => {}
+        RenderedNode::Text { .. } | RenderedNode::Suspended { .. } => {}
     }
 }
 
@@ -1458,6 +1527,7 @@ impl RenderedNode {
             RenderedNode::Host { key, .. } => key,
             RenderedNode::Text { key, .. } => key,
             RenderedNode::Portal { key, .. } => key,
+            RenderedNode::Suspended { key } => key,
         }
     }
 }
@@ -1680,5 +1750,6 @@ fn set_key(node: &mut RenderedNode, key: &str) {
         RenderedNode::Host { key: k, .. } => *k = key.to_string(),
         RenderedNode::Text { key: k, .. } => *k = key.to_string(),
         RenderedNode::Portal { key: k, .. } => *k = key.to_string(),
+        RenderedNode::Suspended { key: k } => *k = key.to_string(),
     }
 }

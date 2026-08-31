@@ -57,6 +57,10 @@ pub enum Value {
     Ref {
         slot: usize,
     },
+    /// The suspension sentinel: a component that READ a pending resource
+    /// value suspends; the nearest `<Suspense fallback>` renders its
+    /// fallback until the resource resolves (state flip -> re-render).
+    Pending,
     /// A `createContext` handle: a runtime-unique id plus the default
     /// value passed to `createContext` (the React contract — the default
     /// lives on the handle, `useContext(Ctx)` needs no extra argument).
@@ -110,6 +114,7 @@ impl Value {
             Value::Dispatcher { .. } => true,
             Value::Ref { .. } => true,
             Value::Context { .. } => true,
+            Value::Pending => true,
             Value::Children(_) => true,
         }
     }
@@ -142,6 +147,7 @@ impl Value {
             Value::Dispatcher { slot } => format!("<dispatch#{slot}>"),
             Value::Ref { slot } => format!("<ref#{slot}>"),
             Value::Context { id, .. } => format!("<ctx#{id}>"),
+            Value::Pending => "<pending>".to_string(),
             Value::Children(_) => "<children>".to_string(),
         }
     }

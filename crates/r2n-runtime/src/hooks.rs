@@ -235,6 +235,29 @@ impl HookFrame {
         }
     }
 
+    /// `useResource(key)`: `(Value::Pending, resolve_setter)` — a
+    /// suspension source. Reads are Pending until the setter fires.
+    pub fn use_pending(&mut self, key: Value) -> (Value, Value) {
+        let idx = self.next_index;
+        self.next_index += 1;
+        let cur = if idx >= self.slots.len() {
+            self.slots.push(HookSlot::State {
+                value: Value::Pending,
+            });
+            Value::Pending
+        } else {
+            match &self.slots[idx] {
+                HookSlot::State { value } => value.clone(),
+                _ => Value::Pending,
+            }
+        };
+        let _ = key;
+        (
+            cur,
+            Value::Setter(crate::hooks::Setter { frame_index: idx }),
+        )
+    }
+
     /// `useId()`: the same `Value` for every render of this instance; a
     /// fresh one after unmount/remount (slot cleared on reset). The id is
     /// globally unique and strings like `:r1:` (React's typical shape).
