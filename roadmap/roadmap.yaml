@@ -293,7 +293,7 @@ phases:
       - id: "M1-T13"
         title: "Error boundaries — capture, fallback, recovery"
         priority: "P0"
-        done: false
+        done: true
       - id: "M1-T14"
         title: "Portals — logical parent vs rendering parent"
         priority: "P1"

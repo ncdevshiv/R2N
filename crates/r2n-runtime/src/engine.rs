@@ -648,7 +648,7 @@ fn render_node(
             // Render the body in this instance's scope; node identity continues
             // from the same position, instance path switches to the child's.
             let _ = &mut body_env;
-            render_node(
+            match render_node(
                 &comp.body,
                 &inst,
                 node_path,
@@ -659,7 +659,111 @@ fn render_node(
                 template,
                 host,
                 effects,
-            )?
+            ) {
+                Ok(node) => node,
+                Err(err) => {
+                    // ERROR BOUNDARY: a class with componentDidCatch /
+                    // getDerivedStateFromError captures an error from its
+                    // subtree. React flow: derive new state, run the catch
+                    // hook, re-render the boundary (render sees the new
+                    // state -> fallback). No boundary -> the error keeps
+                    // propagating to the root.
+                    let Some(class) = comp.class.clone() else {
+                        return Err(err);
+                    };
+                    let has_derived = class
+                        .methods
+                        .iter()
+                        .any(|(n, _)| n == "getDerivedStateFromError");
+                    let has_catch = class.methods.iter().any(|(n, _)| n == "componentDidCatch");
+                    if !has_derived && !has_catch {
+                        return Err(err);
+                    }
+                    let err_value = Value::from_str_utf8(err.error_text());
+                    // 1. getDerivedStateFromError(err) -> new state.
+                    if has_derived {
+                        if let Some((_, m)) = class
+                            .methods
+                            .iter()
+                            .find(|(n, _)| n == "getDerivedStateFromError")
+                        {
+                            let mut denv = Env::child_of(&body_env);
+                            denv.define("err", err_value.clone());
+                            let derived = eval(
+                                &m.body,
+                                &mut denv,
+                                frames.get(&inst),
+                                host,
+                                &template.components,
+                                effects,
+                            )?;
+                            if class.state.is_some() {
+                                frames.get(&inst).apply_setter(
+                                    &crate::hooks::Setter { frame_index: 0 },
+                                    derived,
+                                );
+                            }
+                        }
+                    }
+                    // 2. componentDidCatch(err) (observable log hook).
+                    if has_catch {
+                        if let Some((_, m)) =
+                            class.methods.iter().find(|(n, _)| n == "componentDidCatch")
+                        {
+                            let mut denv = Env::child_of(&body_env);
+                            denv.define("err", err_value);
+                            let _ = eval(
+                                &m.body,
+                                &mut denv,
+                                frames.get(&inst),
+                                host,
+                                &template.components,
+                                effects,
+                            )?;
+                        }
+                    }
+                    // 3. Rebuild the boundary env (new state) and re-render.
+                    // Reset the frame's hook cursor: the mid-pass re-render
+                    // must start hook registration at slot 0 (the catch's
+                    // willUnmount use_effect advanced it to 1 — reuse would
+                    // read the EFFECT slot as the state and re-init 0).
+                    let pass3 = frames.current_pass();
+                    frames.get(&inst).begin_render(pass3);
+                    let mut re_env = Env::child_of(&body_env);
+                    for (n, e) in &comp.bindings {
+                        let v = eval(
+                            e,
+                            &mut re_env,
+                            frames.get(&inst),
+                            host,
+                            &template.components,
+                            effects,
+                        )?;
+                        re_env.define(n, v);
+                    }
+                    setup_class_env(
+                        comp.class.as_ref(),
+                        &inst,
+                        &mut re_env,
+                        frames,
+                        host,
+                        template,
+                        effects,
+                    )?;
+                    render_node(
+                        &comp.body,
+                        &inst,
+                        node_path,
+                        &mut re_env,
+                        frames,
+                        scopes,
+                        splices,
+                        template,
+                        host,
+                        effects,
+                    )?
+                }
+            }
         }
         ReactNode::If { cond, then, else_ } => {
             let c = {
