@@ -64,6 +64,12 @@ pub const ARTIFACT_FORMAT_VERSION: u32 = 1;
 /// compiler; round-trips through JSON with the artifact).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RuntimeTemplate {
+    /// Dev build flag: in dev, effects run the React StrictMode double
+    /// invoke (mount → cleanup → mount). Production artifacts NEVER carry
+    /// it (absent = false; StrictMode nodes are stripped at lowering).
+    #[serde(default)]
+    pub strict_mode: bool,
+
     pub components: Vec<RuntimeComponent>,
     pub root: usize,
     /// Artifact manifest (M0.3-T09): format + generator stamps.

@@ -257,6 +257,7 @@ impl Runtime {
                 &mut self.frames,
                 &mut host,
                 &self.template.components,
+                self.template.strict_mode,
             )?;
         }
         // Handlers are re-derived from the fresh tree each pass; start clean
@@ -284,6 +285,7 @@ impl Runtime {
                 &mut self.frames,
                 &mut host,
                 &self.template.components,
+                self.template.strict_mode,
             )?;
         }
         // Frames that went dirty during this pass (setter calls in bindings,
@@ -345,7 +347,13 @@ impl Runtime {
             let mut host = LogHost { log: &mut self.log };
             let frames = &mut self.frames;
             let components = &self.template.components;
-            run_effects(&effects, frames, &mut host, components)?;
+            run_effects(
+                &effects,
+                frames,
+                &mut host,
+                components,
+                self.template.strict_mode,
+            )?;
             Ok(patches)
         }
     }
@@ -370,7 +378,13 @@ fn render_root(
     let mut effects: Vec<EffectBody> = Vec::new();
     // Unmount cleanups run immediately; the frame borrow ended above.
     if !unmount_cleanups.is_empty() {
-        run_effects(&unmount_cleanups, frames, host, &template.components)?;
+        run_effects(
+            &unmount_cleanups,
+            frames,
+            host,
+            &template.components,
+            template.strict_mode,
+        )?;
     }
     {
         let frame = frames.get(&path);
@@ -412,7 +426,13 @@ fn render_root(
     // Layout effects drain SYNCHRONOUSLY here — during the render walk,
     // before the diff runs (pre-commit). Regular effects are deferred:
     // render_once drains them after the diff (post-commit).
-    run_layout_effects(&effects, frames, host, &template.components)?;
+    run_layout_effects(
+        &effects,
+        frames,
+        host,
+        &template.components,
+        template.strict_mode,
+    )?;
     let deferred: Vec<EffectBody> = effects.into_iter().filter(|e| !e.layout).collect();
     Ok((node, deferred))
 }
@@ -614,7 +634,13 @@ fn render_node(
                 let cframe = frames.get(&inst);
                 let unmount_cleanups = cframe.begin_render(pass);
                 if !unmount_cleanups.is_empty() {
-                    run_effects(&unmount_cleanups, frames, host, &template.components)?;
+                    run_effects(
+                        &unmount_cleanups,
+                        frames,
+                        host,
+                        &template.components,
+                        template.strict_mode,
+                    )?;
                 }
                 let mut cenv = Env::child_of(env);
                 for (p, v) in comp
@@ -641,7 +667,13 @@ fn render_node(
                 }
                 // Layout effects drain inline (synchronous, pre-commit);
                 // regular effects ride the outer queue to post-diff.
-                run_layout_effects(&ceffects, frames, host, &template.components)?;
+                run_layout_effects(
+                    &ceffects,
+                    frames,
+                    host,
+                    &template.components,
+                    template.strict_mode,
+                )?;
                 effects.extend(ceffects.into_iter().filter(|e| !e.layout));
                 cenv
             };
@@ -915,6 +947,35 @@ fn render_node(
                 props: Vec::new(),
                 children: out,
                 key: "suspense".to_string(),
+            }
+        }
+        ReactNode::StrictMode { children } => {
+            // Transparent wrapper; in dev the template's strict_mode flag
+            // drives the double-invoke at effect drain time. Production
+            // artifacts never contain this node (stripped at lowering).
+            let mut out = Vec::with_capacity(children.len());
+            for (i, c) in children.iter().enumerate() {
+                let child_node = child_path(node_path, i, &format!("#{i}"));
+                let mut rc = render_node(
+                    c,
+                    inst_path,
+                    &child_node,
+                    env,
+                    frames,
+                    scopes,
+                    splices,
+                    template,
+                    host,
+                    effects,
+                )?;
+                set_key(&mut rc, &format!("#{i}"));
+                out.push(rc);
+            }
+            RenderedNode::Host {
+                tag: FRAGMENT.to_string(),
+                props: Vec::new(),
+                children: out,
+                key: "strict".to_string(),
             }
         }
         ReactNode::Portal { target, children } => {
@@ -1634,6 +1695,7 @@ fn run_effects(
     frames: &mut FrameStore,
     host: &mut dyn Host,
     components: &[r2n_ir::runtime::RuntimeComponent],
+    strict: bool,
 ) -> Result<(), RuntimeError> {
     for e in effects {
         let mut env = e.env.clone();
@@ -1643,7 +1705,21 @@ fn run_effects(
             Some(p) => frames.get(p),
             None => unreachable!("every EffectBody carries a frame path"),
         };
-        run_effect_body(&e.body, &mut env, frame, host, components)?;
+        if strict {
+            // React StrictMode dev double-invoke: setup -> cleanup ->
+            // setup, surfacing impure effects.
+            run_effect_body(&e.body, &mut env, frame, host, components)?;
+            if let Some(cleanup) =
+                crate::eval::cleanup_of(&e.body, &env, true, e.frame_path.clone())
+            {
+                let mut cenv = cleanup.env.clone();
+                run_effect_body(&cleanup.body, &mut cenv, frame, host, components)?;
+            }
+            let mut env2 = e.env.clone();
+            run_effect_body(&e.body, &mut env2, frame, host, components)?;
+        } else {
+            run_effect_body(&e.body, &mut env, frame, host, components)?;
+        }
     }
     Ok(())
 }
@@ -1717,15 +1793,23 @@ fn setup_class_env(
             _ => {}
         }
     }
-    run_layout_effects(&lifecycle_effects, frames, host, &template.components)?;
+    run_layout_effects(
+        &lifecycle_effects,
+        frames,
+        host,
+        &template.components,
+        template.strict_mode,
+    )?;
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_layout_effects(
     effects: &[EffectBody],
     frames: &mut FrameStore,
     host: &mut dyn Host,
     components: &[r2n_ir::runtime::RuntimeComponent],
+    strict: bool,
 ) -> Result<(), RuntimeError> {
     let layout: Vec<&EffectBody> = effects.iter().filter(|e| e.layout).collect();
     for e in layout {
@@ -1734,7 +1818,20 @@ fn run_layout_effects(
             Some(p) => frames.get(p),
             None => unreachable!("every EffectBody carries a frame path"),
         };
-        run_effect_body(&e.body, &mut env, frame, host, components)?;
+        if strict {
+            // Dev double-invoke (setup -> cleanup -> setup).
+            run_effect_body(&e.body, &mut env, frame, host, components)?;
+            if let Some(cleanup) =
+                crate::eval::cleanup_of(&e.body, &env, true, e.frame_path.clone())
+            {
+                let mut cenv = cleanup.env.clone();
+                run_effect_body(&cleanup.body, &mut cenv, frame, host, components)?;
+            }
+            let mut env2 = e.env.clone();
+            run_effect_body(&e.body, &mut env2, frame, host, components)?;
+        } else {
+            run_effect_body(&e.body, &mut env, frame, host, components)?;
+        }
     }
     Ok(())
 }

@@ -47,6 +47,14 @@ pub fn compile_source(src: &str) -> Result<RuntimeTemplate, CompileError> {
     Ok(template)
 }
 
+/// Compile in DEV mode: keeps StrictMode nodes and marks the artifact so
+/// the runtime double-invokes effects inside StrictMode subtrees.
+pub fn compile_source_dev(src: &str) -> Result<RuntimeTemplate, CompileError> {
+    let program = r2n_parser::parse(src)?;
+    let template = r2n_ir::lower_dev(&program)?;
+    Ok(template)
+}
+
 /// Collect every diagnostic in the source in one pass (parse with recovery),
 /// then — if it parses — continue into lowering for its diagnostics too.
 /// Returns the rendered diagnostics, one String per error, ready to print.
