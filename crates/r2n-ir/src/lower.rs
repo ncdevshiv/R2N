@@ -367,6 +367,12 @@ fn free_vars_of_body(bindings: &[(String, JsExpr)], body: &ReactNode) -> Vec<Str
 fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, LowerError> {
     Ok(match expr {
         Expr::Literal(l) => JsExpr::Lit(l.clone()),
+        // `undefined` is a keyword, not a variable: it lowers to the
+        // literal (a bare undefined reference is an unbound error in our
+        // subset otherwise).
+        Expr::Ident { name, .. } if name == "undefined" => {
+            JsExpr::Lit(r2n_ast::lit::Literal::Undefined)
+        }
         Expr::Ident { name, .. } => JsExpr::Var(name.clone()),
         Expr::Member { base, prop } => JsExpr::Get {
             base: Box::new(lower_expr(base, index)?),

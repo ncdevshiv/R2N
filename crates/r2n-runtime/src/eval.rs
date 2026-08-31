@@ -10,7 +10,7 @@
 //! `useState`/`useEffect` (ADR-002/ADR-003).
 
 use crate::hooks::{EffectBody, HookFrame};
-use crate::value::{RuntimeError, Value};
+use crate::value::{RuntimeError, Symbol, Value};
 use r2n_ir::js::{JsBinOp, JsExpr, JsUnOp};
 use r2n_ir::runtime::RuntimeComponent;
 use std::collections::BTreeMap;
@@ -114,14 +114,20 @@ pub fn eval(
                     env.define(name, v.clone());
                     Ok(v)
                 }
-                // `ref.current = v` writes the frame slot (persists across
-                // renders without re-render — React ref semantics). Other
-                // member writes are rejected.
                 JsExpr::Get { base, prop } => {
                     let b = eval(base, env, frame, host, components, effects)?;
                     match (&b, prop.as_str()) {
+                        // `ref.current = v` writes the frame slot (persists
+                        // across renders without re-render).
                         (Value::Ref { slot }, "current") => {
                             frame.write_ref(*slot, v.clone());
+                            Ok(v)
+                        }
+                        // Object member writes set the property. (Value::Map
+                        // is a plain (non-shared) props bag — immutable in
+                        // this subset; the mutable bag is Object.)
+                        (Value::Object(o), p) => {
+                            o.borrow_mut().insert(p.to_string(), v.clone());
                             Ok(v)
                         }
                         _ => Err(RuntimeError::new(format!("cannot assign to {prop} on {b}"))),
@@ -162,11 +168,15 @@ pub fn eval(
                 eval(else_, env, frame, host, components, effects)
             }
         }
-        JsExpr::Closure { .. } => {
-            // A closure used as a value only occurs as a `.map` argument, which
-            // we evaluate directly in `call_map` by name; a bare closure value
-            // is never produced otherwise.
-            Ok(Value::Null)
+        JsExpr::Closure { params, body, .. } => {
+            // First-class function value: params + body, invoked against the
+            // caller's env (lexical capture arrives with M2-T03). Handlers
+            // and map/filter args are consumed before this arm by their
+            // dedicated paths.
+            Ok(Value::Function {
+                params: params.clone(),
+                body: body.clone(),
+            })
         }
         JsExpr::Call { callee, args } => {
             if let JsExpr::Get { base, prop } = &**callee {
@@ -216,6 +226,36 @@ pub fn eval(
     }
 }
 
+/// ECMA-262 ToNumber for the supported value set: undefined -> NaN,
+/// null -> 0, bool -> 0|1, strings parse ("" -> 0, invalid -> NaN),
+/// numbers pass through, BigInt/Numeric-like convert (BigInt via f64,
+/// bounded), everything else NaN.
+fn ecma_to_number(v: &Value) -> f64 {
+    match v {
+        Value::Undefined => f64::NAN,
+        Value::Null => 0.0,
+        Value::Bool(b) => {
+            if *b {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        Value::Number(n) => *n,
+        Value::BigInt(n) => *n as f64,
+        Value::Str(s) => {
+            let s = String::from_utf16_lossy(s);
+            let t = s.trim();
+            if t.is_empty() {
+                0.0
+            } else {
+                t.parse::<f64>().unwrap_or(f64::NAN)
+            }
+        }
+        _ => f64::NAN,
+    }
+}
+
 fn lit_to_value(l: &r2n_ir::value::Literal) -> Value {
     use r2n_ir::value::Literal as L;
     match l {
@@ -224,12 +264,17 @@ fn lit_to_value(l: &r2n_ir::value::Literal) -> Value {
         L::String(s) => Value::from_str_utf8(s),
         L::Bool(b) => Value::Bool(*b),
         L::Null => Value::Null,
+        L::Undefined => Value::Undefined,
     }
 }
 
 fn get_prop(base: &Value, prop: &str) -> Result<Value, RuntimeError> {
     match base {
         Value::Map(m) => Ok(m.get(prop).cloned().unwrap_or(Value::Null)),
+        Value::Object(o) => {
+            let b = o.borrow();
+            Ok(b.get(prop).cloned().unwrap_or(Value::Undefined))
+        }
         Value::Str(u) if prop == "length" => Ok(Value::Number(u.len() as f64)),
         Value::Array(a) if prop == "length" => Ok(Value::Number(a.len() as f64)),
         other => Err(RuntimeError::new(format!("cannot read .{prop} on {other}"))),
@@ -255,6 +300,11 @@ fn index_prop(base: &Value, key: &Value) -> Result<Value, RuntimeError> {
         Value::Map(m) => {
             let k = key.as_str_utf8().unwrap_or_else(|| key.display());
             Ok(m.get(&k).cloned().unwrap_or(Value::Null))
+        }
+        Value::Object(o) => {
+            let k = key.as_str_utf8().unwrap_or_else(|| key.display());
+            let b = o.borrow();
+            Ok(b.get(&k).cloned().unwrap_or(Value::Undefined))
         }
         other => Err(RuntimeError::new(format!("cannot index {other}"))),
     }
@@ -300,12 +350,8 @@ fn eval_bin(
                     r.display()
                 )));
             }
-            let ln = l
-                .as_number()
-                .ok_or_else(|| RuntimeError::new("non-number operand"))?;
-            let rn = r
-                .as_number()
-                .ok_or_else(|| RuntimeError::new("non-number operand"))?;
+            let ln = ecma_to_number(&l);
+            let rn = ecma_to_number(&r);
             Value::Number(ln + rn)
         }
         Sub => num_op(&l, &r, |a, b| a - b)?,
@@ -424,6 +470,16 @@ fn call_value(
             // e.g. `this.method()` inside a class render/handler).
             // Event dispatch still exists for the ABI's on* path.
             eval(body, env, frame, host, components, effects)
+        }
+        Value::Function { params, body } => {
+            // First-class function call: bind params to args, evaluate the
+            // body in a child of the caller's env (lexical capture arrives
+            // with M2-T03).
+            let mut fenv = Env::child_of(env);
+            for (i, p) in params.iter().enumerate() {
+                fenv.define(p, args.get(i).cloned().unwrap_or(Value::Undefined));
+            }
+            eval(body, &mut fenv, frame, host, components, effects)
         }
         other => Err(RuntimeError::new(format!(
             "cannot call {other} as function"
@@ -557,6 +613,61 @@ fn call_var(
                 return Err(RuntimeError::new("useId outside a component"));
             }
             Ok(frame.use_id())
+        }
+        "BigInt" => {
+            let v = if let Some(a) = args.first() {
+                eval(a, env, frame, host, components, effects)?
+            } else {
+                Value::Undefined
+            };
+            match v {
+                Value::Number(n) if n.fract() == 0.0 && n.abs() < 9.2e18 => {
+                    Ok(Value::BigInt(n as i64))
+                }
+                Value::BigInt(n) => Ok(Value::BigInt(n)),
+                Value::Bool(b) => Ok(Value::BigInt(b as i64)),
+                Value::Undefined | Value::Null => {
+                    Err(RuntimeError::new("cannot convert to BigInt"))
+                }
+                other => Err(RuntimeError::new(format!(
+                    "cannot convert {other} to BigInt"
+                ))),
+            }
+        }
+        "Symbol" => {
+            // Symbol() -> fresh anonymous; Symbol.for? -> registered by key.
+            let key = if args.is_empty() {
+                None
+            } else {
+                let v = eval(&args[0], env, frame, host, components, effects)?;
+                Some(v.display())
+            };
+            Ok(Value::Symbol(new_symbol(key)))
+        }
+        "Object" => Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
+            BTreeMap::new(),
+        )))),
+        "typeof" => {
+            let v = if let Some(a) = args.first() {
+                eval(a, env, frame, host, components, effects)?
+            } else {
+                Value::Undefined
+            };
+            Ok(Value::from_str_utf8(match &v {
+                Value::Undefined => "undefined",
+                Value::Null => "object",
+                Value::Bool(_) => "boolean",
+                Value::Number(_) => "number",
+                Value::BigInt(_) => "bigint",
+                Value::Str(_) => "string",
+                Value::Symbol(_) => "symbol",
+                Value::Object(_) | Value::Map(_) | Value::Array(_) | Value::Children(_) => "object",
+                Value::Function { .. } | Value::Handler { .. } => "function",
+                Value::External(_) => "external",
+                Value::Setter(_) | Value::Dispatcher { .. } | Value::Ref { .. } => "function",
+                Value::Context { .. } => "object",
+                Value::Pending => "object",
+            }))
         }
         "useRef" => {
             let initial = if let Some(a) = args.first() {
@@ -752,6 +863,15 @@ pub fn cleanup_of(
         layout,
         frame_path,
     })
+}
+
+/// Symbol identity source: fresh ids; `Symbol.for(key)` symbols share id
+/// by key (registered symbols).
+fn new_symbol(key: Option<String>) -> Symbol {
+    use std::sync::atomic::{AtomicU64, Ordering as O};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let id = NEXT.fetch_add(1, O::Relaxed);
+    Symbol { id, key }
 }
 
 fn deps_from_value(v: &Value) -> Vec<Value> {

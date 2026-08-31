@@ -998,3 +998,44 @@ version per artifact makes the claim auditable at runtime.
 **CHOSE**
 Behavior-first conformance suite + artifact stamp. Suite 163; records
 updated (M1 18/18, 54/106).
+
+## 2026-08-31 — Entry 23: M2-T01 Full ECMAScript Value Model
+
+**PLAN**
+The Level-2 foundation: the complete Value vocabulary — Undefined/Null/
+Boolean/Number/BigInt/String/Symbol/Object/Function/External — with ECMA
+observable semantics (not just enum variants).
+
+**WHAT**
+- `Value` gains: `Undefined` (a keyword literal — `undefined` lowers to
+  `JsExpr::Lit(Undefined)`), `BigInt(i64)` (bounded subset documented),
+  `Symbol { id, key }` (identity-distinct; `Symbol(key)` builtin; `Symbol
+  .for`-style registration ready), `Object(Rc<RefCell<Map>>)` (dynamic
+  property bag — `Object()` builtin, member get/set, index access, missing
+  prop → undefined, typeof "object"), `Function { params, body }` (first-
+  class — `JsExpr::Closure` now EVALUATES to a real Function value (was
+  Null), and `call_value` invokes it with param binding, missing arg →
+  undefined), `External(u64)` (opaque handle).
+- ECMA semantics: ToBoolean (undefined/null/±0/NaN/""/0n falsy),
+  ToNumber (undefined→NaN, null→0, bool→0|1, string parse), `typeof`
+  builtin, display (BigInt "42n", Symbol "Symbol(id)").
+- The ECMA ToNumber change also fixes a latent issue: `1 + undefined`
+  was a "non-number operand" error; now NaN (parity).
+
+**WHY**
+Without these semantics the Level-2 engine is unbuildable — every later
+task (objects, closures, classes, coercion, exceptions, promises) is a
+Type/operation over this vocabulary. "Full value model" means the
+ECMAScript behavior, not merely more enum arms.
+
+**OPTIONS**
+- Object as a literal map alias: rejected — objects need identity and
+  mutation (the test: missing prop is undefined, not null).
+- Function value = Handler reuse: rejected — Handler carries instance
+  path scoping; a plain function value must be callable with ordinary
+  parameter binding.
+
+**CHOSE**
+Full vocabulary + ECMA conversions + real first-class functions.
+7 tests (tests/value_model.rs); suite 170; records updated
+(M2 1/15, 55/106).
