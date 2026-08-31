@@ -12,10 +12,10 @@
 
 use crate::js::{JsBinOp, JsExpr, JsUnOp};
 use crate::react::{ComponentRef, ReactNode};
-use crate::runtime::{RuntimeComponent, RuntimeTemplate};
+use crate::runtime::{ClassInfo, ClassMethod, RuntimeComponent, RuntimeTemplate};
 use r2n_ast::expr::{Element, Expr, Prop};
 use r2n_ast::op::{BinOp, UnOp};
-use r2n_ast::program::{Component, Decl, Program, Stmt};
+use r2n_ast::program::{ClassComponent, Component, Decl, Program, Stmt};
 use std::collections::HashMap;
 
 /// Error during lowering (e.g. unknown component reference).
@@ -54,16 +54,20 @@ pub fn lower(program: &Program) -> Result<RuntimeTemplate, LowerError> {
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut components: Vec<RuntimeComponent> = Vec::new();
     for decl in &program.decls {
-        if let Decl::Component(c) = decl {
-            index.insert(c.name.clone(), components.len());
-            components.push(RuntimeComponent {
-                name: c.name.clone(),
-                params: c.params.clone(),
-                captures: Vec::new(),
-                bindings: Vec::new(),
-                body: ReactNode::Text(JsExpr::Lit(r2n_ast::lit::Literal::Null)),
-            });
-        }
+        let name = match decl {
+            Decl::Component(c) => c.name.clone(),
+            Decl::Class(c) => c.name.clone(),
+            Decl::Import(_) | Decl::ExportDefault(_) => continue,
+        };
+        index.insert(name.clone(), components.len());
+        components.push(RuntimeComponent {
+            name,
+            params: Vec::new(),
+            captures: Vec::new(),
+            bindings: Vec::new(),
+            body: ReactNode::Text(JsExpr::Lit(r2n_ast::lit::Literal::Null)),
+            class: None,
+        });
     }
     let root = program
         .root
@@ -73,10 +77,17 @@ pub fn lower(program: &Program) -> Result<RuntimeTemplate, LowerError> {
 
     // 2. Lower each component body.
     for decl in &program.decls {
-        if let Decl::Component(c) = decl {
-            let idx = index[&c.name];
-            let lowered = lower_component(c, &index)?;
-            components[idx] = lowered;
+        match decl {
+            Decl::Component(c) => {
+                let idx = index[&c.name];
+                let lowered = lower_component(c, &index)?;
+                components[idx] = lowered;
+            }
+            Decl::Class(c) => {
+                let idx = index[&c.name];
+                components[idx] = lower_class(c, &index)?;
+            }
+            _ => {}
         }
     }
 
@@ -158,6 +169,96 @@ fn lower_component(
         captures,
         bindings: out.bindings,
         body: out.body,
+        class: None,
+    })
+}
+
+/// Lower a class component: `render()` becomes the component body; other
+/// methods become `ClassMethod`s; `state = expr` the ClassInfo state.
+fn lower_class(
+    c: &ClassComponent,
+    index: &HashMap<String, usize>,
+) -> Result<RuntimeComponent, LowerError> {
+    let mut out = LoweredBody {
+        bindings: Vec::new(),
+        body: ReactNode::Text(JsExpr::Lit(r2n_ast::lit::Literal::Null)),
+    };
+    for m in &c.methods {
+        if m.name == "render" {
+            for st in &m.body {
+                match st {
+                    Stmt::Let { name, value } => {
+                        out.bindings.push((name.clone(), lower_expr(value, index)?))
+                    }
+                    Stmt::Const { name, value } => {
+                        out.bindings.push((name.clone(), lower_expr(value, index)?))
+                    }
+                    Stmt::Return(expr) => out.body = lower_renderable(expr, index)?,
+                    Stmt::Expr(e) => out
+                        .bindings
+                        .push(("$stmt".to_string(), lower_expr(e, index)?)),
+                }
+            }
+        }
+    }
+    // Same renderable validation as function components.
+    if !matches!(
+        out.body,
+        ReactNode::Host { .. }
+            | ReactNode::Component { .. }
+            | ReactNode::If { .. }
+            | ReactNode::List { .. }
+            | ReactNode::Fragment { .. }
+            | ReactNode::ContextProvider { .. }
+    ) {
+        return Err(LowerError::NonRenderableReturn(format!(
+            "class {} renders a non-renderable expression",
+            c.name
+        )));
+    }
+    let state = match &c.state {
+        Some(e) => Some(lower_expr(e, index)?),
+        None => None,
+    };
+    let mut methods = Vec::new();
+    for m in &c.methods {
+        if m.name == "render" {
+            continue;
+        }
+        let body_stmts: Vec<JsExpr> = m
+            .body
+            .iter()
+            .map(|st| match st {
+                Stmt::Let { name, value } => {
+                    // let inside a method: a block binding (assign then value)
+                    Ok(JsExpr::Assign {
+                        target: Box::new(JsExpr::Var(name.clone())),
+                        value: Box::new(lower_expr(value, index)?),
+                    })
+                }
+                Stmt::Const { name, value } => Ok(JsExpr::Assign {
+                    target: Box::new(JsExpr::Var(name.clone())),
+                    value: Box::new(lower_expr(value, index)?),
+                }),
+                Stmt::Return(expr) => Ok(lower_expr(expr, index)?),
+                Stmt::Expr(e) => Ok(lower_expr(e, index)?),
+            })
+            .collect::<Result<_, _>>()?;
+        methods.push((
+            m.name.clone(),
+            ClassMethod {
+                params: m.params.clone(),
+                body: JsExpr::Block(body_stmts),
+            },
+        ));
+    }
+    Ok(RuntimeComponent {
+        name: c.name.clone(),
+        params: Vec::new(),
+        captures: Vec::new(),
+        bindings: out.bindings,
+        body: out.body,
+        class: Some(ClassInfo { state, methods }),
     })
 }
 

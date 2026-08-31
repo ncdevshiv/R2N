@@ -371,6 +371,15 @@ fn render_root(
             env.define(name, v);
         }
     }
+    setup_class_env(
+        comp.class.as_ref(),
+        &path,
+        &mut env,
+        frames,
+        host,
+        template,
+        &mut effects,
+    )?;
     scopes.insert(path.clone(), InstanceScope { env: env.clone() });
     let node_path = vec!["root".to_string()];
     let node = render_node(
@@ -616,12 +625,29 @@ fn render_node(
                 effects.extend(ceffects.into_iter().filter(|e| !e.layout));
                 cenv
             };
+            // Class components: state slot + `this` (state/setState/methods)
+            // + lifecycle wiring (helper shared with render_root).
+            let mut body_env = cenv;
+            setup_class_env(
+                comp.class.as_ref(),
+                &inst,
+                &mut body_env,
+                frames,
+                host,
+                template,
+                effects,
+            )?;
             // Save this instance's scope so handlers dispatched later run in
             // it (the frame protocol's re-entry channel).
-            scopes.insert(inst.clone(), InstanceScope { env: cenv.clone() });
+            scopes.insert(
+                inst.clone(),
+                InstanceScope {
+                    env: body_env.clone(),
+                },
+            );
             // Render the body in this instance's scope; node identity continues
             // from the same position, instance path switches to the child's.
-            let mut body_env = cenv;
+            let _ = &mut body_env;
             render_node(
                 &comp.body,
                 &inst,
@@ -1257,6 +1283,78 @@ fn run_effects(
 }
 
 /// Run only the `useLayoutEffect` bodies (synchronous, pre-commit).
+#[allow(clippy::too_many_arguments)]
+fn setup_class_env(
+    class: Option<&r2n_ir::runtime::ClassInfo>,
+    inst: &[String],
+    env: &mut Env,
+    frames: &mut FrameStore,
+    host: &mut dyn Host,
+    template: &RuntimeTemplate,
+    effects: &mut Vec<EffectBody>,
+) -> Result<(), RuntimeError> {
+    let Some(class) = class else {
+        return Ok(());
+    };
+    let cframe2 = frames.get(inst);
+    let state_val = match &class.state {
+        Some(e) => {
+            let v = eval(e, env, cframe2, host, &template.components, effects)?;
+            let (sv, _st) = cframe2.use_state(v);
+            env.define("$state", sv.clone());
+            sv
+        }
+        None => Value::Null,
+    };
+    let setter = match &class.state {
+        Some(_) => Value::Setter(crate::hooks::Setter { frame_index: 0 }),
+        None => Value::Null,
+    };
+    let mut this_map: BTreeMap<String, Value> = BTreeMap::new();
+    this_map.insert("state".to_string(), state_val);
+    this_map.insert("setState".to_string(), setter);
+    for (mname, m) in &class.methods {
+        this_map.insert(
+            mname.clone(),
+            Value::Handler {
+                inst_path: inst.to_vec(),
+                body: Box::new(m.body.clone()),
+                ident: 0,
+            },
+        );
+    }
+    env.define("this", Value::Map(this_map));
+    let mut lifecycle_effects: Vec<EffectBody> = Vec::new();
+    for (mname, m) in &class.methods {
+        match mname.as_str() {
+            "componentDidMount" | "componentDidUpdate" => {
+                let is_mount = cframe2.is_first_render();
+                let want = (mname.as_str() == "componentDidMount") == is_mount;
+                if want {
+                    lifecycle_effects.push(EffectBody {
+                        body: m.body.clone(),
+                        env: env.clone(),
+                        layout: true,
+                        frame_path: Some(inst.to_vec()),
+                    });
+                }
+            }
+            "componentWillUnmount" => {
+                let cleanup = EffectBody {
+                    body: m.body.clone(),
+                    env: env.clone(),
+                    layout: true,
+                    frame_path: Some(inst.to_vec()),
+                };
+                let _ = cframe2.use_effect(Some(Vec::new()), Some(cleanup));
+            }
+            _ => {}
+        }
+    }
+    run_layout_effects(&lifecycle_effects, frames, host, &template.components)?;
+    Ok(())
+}
+
 fn run_layout_effects(
     effects: &[EffectBody],
     frames: &mut FrameStore,

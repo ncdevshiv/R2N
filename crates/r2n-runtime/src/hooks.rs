@@ -35,6 +35,9 @@ pub struct HookFrame {
     /// `FrameStore::get`). Needed to build `Value::Handler` values
     /// (useCallback) that must resolve the owning component's scope.
     path: Option<Vec<String>>,
+    /// Renders this frame has performed (for class lifecycle: didMount on
+    /// the first, didUpdate afterwards).
+    render_count: u64,
     /// Monotonic source of useCallback identity numbers.
     next_cb_ident: u64,
 }
@@ -189,6 +192,12 @@ impl HookFrame {
     }
 
     /// A fresh identity number for a useCallback registration.
+    /// Is this the FIRST render of the frame (mount)? Used by class
+    /// componentDidMount vs componentDidUpdate.
+    pub fn is_first_render(&self) -> bool {
+        self.render_count <= 1
+    }
+
     pub fn next_callback_ident(&mut self) -> u64 {
         self.next_cb_ident += 1;
         self.next_cb_ident
@@ -433,6 +442,7 @@ impl HookFrame {
         self.last_pass = Some(pass);
         self.next_index = 0;
         self.effects.clear();
+        self.render_count += 1;
         Vec::new()
     }
 

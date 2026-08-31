@@ -7,6 +7,8 @@ use crate::expr::Expr;
 pub enum Decl {
     /// `component Name(props) { return <.../>; }`
     Component(Component),
+    /// `class Name extends Component { state = ...; render() {...} }`
+    Class(ClassComponent),
     /// `import { X, Y } from "module";` — limited to importing other R2N
     /// components from local files (path is resolved relative to the source).
     Import(Import),
@@ -23,6 +25,26 @@ pub struct Component {
     /// to avoid `props.x` plumbing in the supported subset).
     pub params: Vec<String>,
     /// The render body: a list of statements, the last being `return <.../>`.
+    pub body: Vec<Stmt>,
+}
+
+/// A class component: `class Name extends Component`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassComponent {
+    pub name: String,
+    /// The `state = expr;` initializer (optional).
+    pub state: Option<Expr>,
+    /// Methods by name (`render` is required; `componentDidMount`
+    /// / `componentDidUpdate` / `componentWillUnmount` are lifecycle).
+    pub methods: Vec<Method>,
+}
+
+/// A class-component method: `name(params) { body }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Method {
+    pub name: String,
+    pub params: Vec<String>,
+    /// Body statements; `render`'s body ends with `return <.../>`.
     pub body: Vec<Stmt>,
 }
 

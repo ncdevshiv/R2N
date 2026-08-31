@@ -384,7 +384,7 @@ fn eval_un(op: JsUnOp, v: &Value) -> Result<Value, RuntimeError> {
 fn call_value(
     callee: &Value,
     args: &[Value],
-    _env: &mut Env,
+    env: &mut Env,
     frame: &mut HookFrame,
     host: &mut dyn Host,
     components: &[RuntimeComponent],
@@ -418,9 +418,13 @@ fn call_value(
             frame.write_state(*slot, new_state);
             Ok(Value::Null)
         }
-        Value::Handler { .. } => Err(RuntimeError::new(
-            "handlers can only be invoked via event dispatch",
-        )),
+        Value::Handler { body, .. } => {
+            // Handler values are plain closures; invoking one evaluates its
+            // body in the CURRENT env/frame (the caller's render scope —
+            // e.g. `this.method()` inside a class render/handler).
+            // Event dispatch still exists for the ABI's on* path.
+            eval(body, env, frame, host, components, effects)
+        }
         other => Err(RuntimeError::new(format!(
             "cannot call {other} as function"
         ))),

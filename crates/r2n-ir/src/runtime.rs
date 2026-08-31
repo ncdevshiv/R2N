@@ -32,6 +32,25 @@ pub struct RuntimeComponent {
     pub bindings: Vec<(String, JsExpr)>,
     /// The render body: a React node tree (possibly with conditionals/lists).
     pub body: ReactNode,
+    /// Class-component info (`class X extends Component { ... }`), `None`
+    /// for function components.
+    #[serde(default)]
+    pub class: Option<ClassInfo>,
+}
+
+/// Class-component lowering: the `state` initializer and the methods
+/// (`render` body is already the component `body` above).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ClassInfo {
+    pub state: Option<JsExpr>,
+    /// Methods by name: params + body (a Block of statements).
+    pub methods: Vec<(String, ClassMethod)>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ClassMethod {
+    pub params: Vec<String>,
+    pub body: JsExpr,
 }
 
 /// Artifact format version. Bumped on any breaking change to the serialized

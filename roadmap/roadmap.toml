@@ -410,7 +410,7 @@ done = true
 id = "M1-T12"
 title = "Class components — state, props, lifecycle methods"
 priority = "P1"
-done = false
+done = true
 
 [[phases.tasks]]
 id = "M1-T13"

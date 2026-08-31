@@ -767,3 +767,34 @@ instance lifetime, unique globally.
 Slot-stored atomic id; 3 tests (stability across re-renders, per-instance
 uniqueness, call-site distinctness). Suite 132 green; clippy/fmt/audit
 clean; records updated (M1 11/18, 47/106).
+
+## 2026-08-30 — Entry 17: M1-T12 Class Components
+
+**PLAN**
+`class X extends Component { state = ...; render() {...} }` — state,
+`this`, setState, and the lifecycle methods, with function-component
+parity (the same ABI, the same patch stream).
+
+**WHAT**
+- Parser (strict + recovery): `class NAME extends Component { (state = expr; | name(params) { body })* }`; AST `Decl::Class`/`ClassComponent`/`Method`.
+- Lowering: `ClassInfo { state, methods }`; `render()`'s body becomes the component body (same renderable validation); other methods become IR Blocks.
+- Runtime: `this` is a Map (state value, setState Setter, methods as callable Handler values). `call_value` now INVOKES handler values in the current env (previously error-only) — enabling `this.method()` and event handlers that call it; event dispatch is unchanged.
+- `setState` re-uses the Setter frame slot: dirty → flush → one SetText (verified minimal).
+- ROOT CLASS BUG caught by the smoke test: `render_root` bypassed the Component arm, so a class root never got `this`. The `setup_class_env` helper is shared by both paths.
+- Lifecycle: componentDidMount once (`is_first_render` via render_count), componentDidUpdate on re-renders, componentWillUnmount armed as a synthetic effect cleanup (deps [] never re-run; take_unmounted_cleanups fires it once at unmount).
+
+**WHY**
+Class components are one of the two component shapes React's ecosystem
+uses; the lifecycle map is the observable behavior tests pin. The root
+path bug shows the value of a combined function+class representation in
+the component table rather than two code paths.
+
+**OPTIONS**
+- Desugar classes to function components + state hook: rejected — loses
+  `this`/lifecycle semantics (and the desugar itself would fake).
+- `this` as a reserved env name set per component: done — but ONLY the
+  class path defines it; function components never see it (no leak).
+
+**CHOSE**
+A shared class-env helper over the same ABI. 5 tests; suite 137; records
+updated (M1 12/18, 48/106).
