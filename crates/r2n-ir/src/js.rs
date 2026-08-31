@@ -65,6 +65,14 @@ pub enum JsExpr {
         target: Box<JsExpr>,
         value: Box<JsExpr>,
     },
+    /// An async function's state machine (M2-T07): the body is split at each
+    /// `await` into segments. Segment 0 runs synchronously on call; a
+    /// terminal await suspends until its promise settles, then the next
+    /// segment resumes with the resolved value bound to `await_bind`.
+    AsyncFn {
+        params: Vec<String>,
+        segments: Vec<JsAsyncSegment>,
+    },
     /// `throw value` — raises `value` to the nearest enclosing `Try` (M2-T06).
     Throw { value: Box<JsExpr> },
     /// `try { block } catch (param) { catch } finally { finally }`. The catch
@@ -85,6 +93,21 @@ pub enum JsExpr {
     /// a `Value::Children` holding the nodes verbatim (they still reference
     /// the PARENT's scope — the child splices them, it does not own them).
     Children(Vec<crate::react::ReactNode>),
+}
+
+/// One await-delimited segment of an async function (M2-T07). `stmts` run in
+/// order; the segment's value (or the resolved `await_expr`) drives the
+/// continuation. Serde so the artifact stays serializable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JsAsyncSegment {
+    pub stmts: Vec<JsExpr>,
+    /// Terminal await: this segment suspends until this expression's promise
+    /// settles (None = the segment completes the function with its value).
+    pub await_expr: Option<Box<JsExpr>>,
+    /// `let x = await p` / `x = await p` — the resolved value binds to x.
+    pub await_bind: Option<String>,
+    /// `return await p` — the resolved value completes the async function.
+    pub await_completes: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

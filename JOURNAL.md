@@ -1258,3 +1258,66 @@ broken before.
 **CHOSE**
 Value-carrying RuntimeError + expression-form try. 12 tests; suite 208;
 records (M2 6/15, 60/106).
+
+## 2026-08-31 — Entry 29: M2-T07 Promises + async/await (scheduler-driven)
+
+**PLAN**
+Zero JS host: async semantics must come from the RUNTIME's own job queue,
+not timers or microtasks. Design: promises carry continuations; continu-
+ations are EffectJobs; the engine drains them to a fixpoint at the same
+scheduler points it already had (post-commit effects, post-dispatch).
+
+**WHAT**
+- Value layer: `PromiseData` (state + handlers + `settled` flag for
+  idempotence), `AsyncFnData` (segments + captured env), `Settler` (the
+  executor's resolve/reject params as callable values), `Continuation`
+  (Then / Resume) parked on pending promises.
+- Eval: `new Promise(executor)` (executor runs synchronously, settlers
+  settle idempotently, a sync throw in it rejects); `Promise.resolve/
+  reject` statics; `.then(f, g)` / `.catch(f)` on member calls — handlers
+  queue as jobs when the promise settles, immediately (still async) if it
+  already has.
+- Adoption (ECMA): fulfilling with a promise keeps the result pending and
+  registers a pass-through; when the source settles the result completes
+  with its value (`force_settle` bypasses the settled flag — only the
+  pass-through may). Self-adoption -> TypeError rejection. Handler
+  results settle the chained promise (fulfilled with value, rejected on
+  throw); no-handler .then is the ECMA identity pass-through.
+- Async fns: arrows lower to `JsExpr::AsyncFn { segments }` — the body is
+  split at each await (JsAsyncSegment: stmts / await_expr / await_bind /
+  await_completes). Per CALL: fresh env over the captured one, result
+  promise, segment 0 runs synchronously (ECMA). Each await evals its
+  expr; a pending promise parks a Resume continuation; a settled one
+  queues the job; a non-promise await resumes with the value itself.
+  `return await p` completes the result with the resolved value; a bare
+  trailing `await p;` completes with undefined. Segment errors and
+  rejected awaits REJECT the result (an async fn never throws
+  synchronously; the caller proceeds).
+- Engine: EffectBody -> `EffectJob` (Effect | Then | Resume); `drain_jobs`
+  runs the queue to a fixpoint (spawned jobs re-enter; 10k guard). All
+  four drain points (post-commit, post-dispatch, unmount cleanups, layout
+  pre-commit) now drain continuations, so `setN` inside an await
+  continuation re-renders through the existing dirty-flag scheduler.
+- Await surface: statement positions only (let x = await p; x = await p;
+  await p; return await p;) — everything else (nested in expressions,
+  outside async bodies) is a PRECISE compile error (UnsupportedAwait),
+  not a silent miscompile. A nested arrow's awaits belong to it (the
+  contains_await walker stops at Arrow).
+
+**WHY**
+async/await is the concurrency surface every real library assumes
+(fetch wrappers, data hooks). Building it on the existing effect channel
+means no second runtime loop, deterministic order (FIFO jobs), and
+StrictMode parity for effects while promises drain at defined points.
+
+**OPTIONS**
+- Full CPS transform (await anywhere in expressions): rejected for now —
+  the segment model covers the real-world surface with 10x less
+  machinery; the compile error keeps the boundary honest. Upgrade path
+  keeps the segment IR.
+- Timers/macrotask queue: rejected — deterministic scheduler points are
+  the design constraint; a clock-based queue would make tests flaky.
+
+**CHOSE**
+Segment state machine + EffectJob continuations. 17 tests; suite 225;
+records (M2 7/15, 61/106).

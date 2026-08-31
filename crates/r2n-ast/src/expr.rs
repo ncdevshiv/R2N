@@ -41,11 +41,21 @@ pub enum Expr {
     /// Array literal: `[a, b, c]`.
     Array(Vec<Expr>),
     /// Arrow function: `params => body`. The body is a single expression or a
-    /// block of expression statements (`() => { a(); b(); }`).
+    /// block of expression statements (`() => { a(); b(); }`). `async` marks
+    /// an async arrow (`async () => { await p; ... }`, M2-T07).
     Arrow {
         params: Vec<String>,
         body: Box<Expr>,
+        #[allow(dead_code)]
+        async_: bool,
     },
+    /// `await expr` — suspends an async function at a segment boundary until
+    /// expr's promise settles (M2-T07). Only valid as the statement value of
+    /// an async body (`let x = await p;` / `x = await p;` / `await p;` /
+    /// `return await p;`); the lowerer rejects other positions. `from_return`
+    /// marks the `return await p` form (the resolved value COMPLETES the
+    /// async fn, vs plain `await p;` which only suspends).
+    Await { value: Box<Expr>, from_return: bool },
     /// A block of expression statements, evaluated in order; the block's value
     /// is its last expression. Produced for block-bodied arrows.
     Block(Vec<Expr>),
@@ -103,9 +113,18 @@ impl fmt::Display for Expr {
                 }
                 write!(f, "]")
             }
-            Expr::Arrow { params, body } => {
-                write!(f, "({}) => {body}", params.join(", "))
+            Expr::Arrow {
+                params,
+                body,
+                async_,
+            } => {
+                if *async_ {
+                    write!(f, "async ({}) => {body}", params.join(", "))
+                } else {
+                    write!(f, "({}) => {body}", params.join(", "))
+                }
             }
+            Expr::Await { value, .. } => write!(f, "await {value}"),
             Expr::Block(stmts) => {
                 write!(f, "{{")?;
                 for s in stmts {

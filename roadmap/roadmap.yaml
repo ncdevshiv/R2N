@@ -349,7 +349,7 @@ phases:
       - id: "M2-T07"
         title: "Promises + async/await with scheduler-driven continuations"
         priority: "P0"
-        done: false
+        done: true
       - id: "M2-T08"
         title: "Generators & iterator protocol"
         priority: "P1"

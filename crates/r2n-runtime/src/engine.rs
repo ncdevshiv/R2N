@@ -17,7 +17,7 @@
 //!   yields minimal, deterministic patches and correct list reordering.
 
 use crate::eval::{eval, run_effect_body, Env, Host};
-use crate::hooks::{EffectBody, HookFrame};
+use crate::hooks::{EffectBody, EffectJob, HookFrame};
 use crate::patch::{NodeId, Patch};
 use crate::scheduler::Scheduler;
 use crate::value::{RuntimeError, Value};
@@ -113,11 +113,11 @@ impl FrameStore {
     /// Cleanups of frames NOT rendered in `pass`: they were unmounted this
     /// pass — drain and run their armed effect cleanups (React cleanup on
     /// unmount), disarming them so a later remount cannot run them again.
-    fn take_unmounted_cleanups(&mut self, pass: u64) -> Vec<EffectBody> {
+    fn take_unmounted_cleanups(&mut self, pass: u64) -> Vec<EffectJob> {
         let mut out = Vec::new();
         for frame in self.frames.values_mut() {
             if frame.last_pass() != Some(pass) {
-                out.extend(frame.take_cleanups());
+                out.extend(frame.take_cleanups().into_iter().map(EffectJob::Effect));
             }
         }
         out
@@ -252,8 +252,8 @@ impl Runtime {
             .frames
             .take_unmounted_cleanups(self.frames.current_pass());
         if !unmount_cleanups.is_empty() {
-            run_effects(
-                &unmount_cleanups,
+            drain_jobs(
+                unmount_cleanups,
                 &mut self.frames,
                 &mut host,
                 &self.template.components,
@@ -280,8 +280,8 @@ impl Runtime {
         // matching React's useEffect timing. Layout effects already ran
         // inline during the render walk.
         if !deferred_effects.is_empty() {
-            run_effects(
-                &deferred_effects,
+            drain_jobs(
+                deferred_effects,
                 &mut self.frames,
                 &mut host,
                 &self.template.components,
@@ -328,7 +328,7 @@ impl Runtime {
             .map(|s| s.env.clone())
             .unwrap_or_default();
         let frame = self.frames.get(&inst_path);
-        let mut effects: Vec<EffectBody> = Vec::new();
+        let mut effects: Vec<EffectJob> = Vec::new();
         let mut host = LogHost { log: &mut self.log };
         let result = eval(
             &inner,
@@ -347,8 +347,8 @@ impl Runtime {
             let mut host = LogHost { log: &mut self.log };
             let frames = &mut self.frames;
             let components = &self.template.components;
-            run_effects(
-                &effects,
+            drain_jobs(
+                effects,
                 frames,
                 &mut host,
                 components,
@@ -368,18 +368,21 @@ fn render_root(
     scopes: &mut HashMap<Vec<String>, InstanceScope>,
     splices: &mut SpliceMap,
     host: &mut dyn Host,
-) -> Result<(RenderedNode, Vec<EffectBody>), RuntimeError> {
+) -> Result<(RenderedNode, Vec<EffectJob>), RuntimeError> {
     let root = template.root;
     let comp = template.components[root].clone();
     let path = vec!["root".to_string()];
     let pass = frames.current_pass();
     let unmount_cleanups = frames.get(&path).begin_render(pass);
     let mut env = Env::new();
-    let mut effects: Vec<EffectBody> = Vec::new();
+    let mut effects: Vec<EffectJob> = Vec::new();
     // Unmount cleanups run immediately; the frame borrow ended above.
     if !unmount_cleanups.is_empty() {
-        run_effects(
-            &unmount_cleanups,
+        drain_jobs(
+            unmount_cleanups
+                .into_iter()
+                .map(EffectJob::Effect)
+                .collect(),
             frames,
             host,
             &template.components,
@@ -426,14 +429,20 @@ fn render_root(
     // Layout effects drain SYNCHRONOUSLY here — during the render walk,
     // before the diff runs (pre-commit). Regular effects are deferred:
     // render_once drains them after the diff (post-commit).
-    run_layout_effects(
+    let layout_spawned = run_layout_effects(
         &effects,
         frames,
         host,
         &template.components,
         template.strict_mode,
     )?;
-    let deferred: Vec<EffectBody> = effects.into_iter().filter(|e| !e.layout).collect();
+    let mut all_jobs = effects;
+    // Continuations spawned by layout effects resolve pre-commit too.
+    all_jobs.extend(layout_spawned);
+    let deferred: Vec<EffectJob> = all_jobs
+        .into_iter()
+        .filter(|j| !matches!(j, EffectJob::Effect(eb) if eb.layout))
+        .collect();
     Ok((node, deferred))
 }
 
@@ -448,7 +457,7 @@ fn render_node(
     splices: &mut SpliceMap,
     template: &RuntimeTemplate,
     host: &mut dyn Host,
-    effects: &mut Vec<EffectBody>,
+    effects: &mut Vec<EffectJob>,
 ) -> Result<RenderedNode, RuntimeError> {
     Ok(match node {
         ReactNode::Host {
@@ -634,8 +643,11 @@ fn render_node(
                 let cframe = frames.get(&inst);
                 let unmount_cleanups = cframe.begin_render(pass);
                 if !unmount_cleanups.is_empty() {
-                    run_effects(
-                        &unmount_cleanups,
+                    drain_jobs(
+                        unmount_cleanups
+                            .into_iter()
+                            .map(EffectJob::Effect)
+                            .collect(),
                         frames,
                         host,
                         &template.components,
@@ -650,7 +662,7 @@ fn render_node(
                 {
                     cenv.define(p, v);
                 }
-                let mut ceffects: Vec<EffectBody> = Vec::new();
+                let mut ceffects: Vec<EffectJob> = Vec::new();
                 for (name, expr) in &comp.bindings {
                     let v = {
                         let cf = frames.get(&inst);
@@ -667,14 +679,20 @@ fn render_node(
                 }
                 // Layout effects drain inline (synchronous, pre-commit);
                 // regular effects ride the outer queue to post-diff.
-                run_layout_effects(
+                let cspawned = run_layout_effects(
                     &ceffects,
                     frames,
                     host,
                     &template.components,
                     template.strict_mode,
                 )?;
-                effects.extend(ceffects.into_iter().filter(|e| !e.layout));
+                let mut all_ce = ceffects;
+                all_ce.extend(cspawned);
+                effects.extend(
+                    all_ce
+                        .into_iter()
+                        .filter(|j| !matches!(j, EffectJob::Effect(eb) if eb.layout)),
+                );
                 cenv
             };
             // Class components: state slot + `this` (state/setState/methods)
@@ -1690,35 +1708,178 @@ fn diff_props(
     }
 }
 
-fn run_effects(
-    effects: &[EffectBody],
+/// Run one pass of runtime jobs: React effects AND promise continuations
+/// (M2-T07). Returns jobs spawned while running (chained .then, next async
+/// segment) — callers loop until the queue is empty (drain_jobs).
+#[allow(clippy::too_many_arguments)]
+fn run_jobs(
+    jobs: &[EffectJob],
+    frames: &mut FrameStore,
+    host: &mut dyn Host,
+    components: &[r2n_ir::runtime::RuntimeComponent],
+    strict: bool,
+) -> Result<Vec<EffectJob>, RuntimeError> {
+    let mut spawned: Vec<EffectJob> = Vec::new();
+    for job in jobs {
+        match job {
+            EffectJob::Effect(eb) => {
+                let mut env = eb.env.clone();
+                // Hook handles inside the body (refs, setters) live in the
+                // owning component's frame — resolve it by path.
+                let frame = match &eb.frame_path {
+                    Some(p) => frames.get(p),
+                    None => frames.get(&[]),
+                };
+                if strict {
+                    // React StrictMode dev double-invoke: setup -> cleanup ->
+                    // setup, surfacing impure effects.
+                    spawned.extend(run_effect_body(
+                        &eb.body, &mut env, frame, host, components,
+                    )?);
+                    if let Some(cleanup) =
+                        crate::eval::cleanup_of(&eb.body, &env, true, eb.frame_path.clone())
+                    {
+                        let mut cenv = cleanup.env.clone();
+                        spawned.extend(run_effect_body(
+                            &cleanup.body,
+                            &mut cenv,
+                            frame,
+                            host,
+                            components,
+                        )?);
+                    }
+                    let mut env2 = eb.env.clone();
+                    spawned.extend(run_effect_body(
+                        &eb.body, &mut env2, frame, host, components,
+                    )?);
+                } else {
+                    spawned.extend(run_effect_body(
+                        &eb.body, &mut env, frame, host, components,
+                    )?);
+                }
+            }
+            EffectJob::Then {
+                on_ok,
+                on_err,
+                env,
+                value,
+                rejected,
+                result,
+                frame_path,
+            } => {
+                let chosen = if *rejected { on_err } else { on_ok };
+                match chosen {
+                    // Pass-through chaining (no handler / adoption): the
+                    // result completes with the same value. An ADOPTING
+                    // result (settled but Pending) completes via force.
+                    None => {
+                        let adopt = {
+                            let pd = result.borrow();
+                            pd.settled && matches!(pd.state, crate::value::PromiseState::Pending)
+                        };
+                        if adopt {
+                            crate::eval::force_settle_pub(
+                                result,
+                                value.clone(),
+                                !rejected,
+                                &mut spawned,
+                            );
+                        } else {
+                            crate::eval::settle_promise(
+                                result,
+                                value.clone(),
+                                !rejected,
+                                &mut spawned,
+                            );
+                        }
+                    }
+                    Some((body, param)) => {
+                        let mut cenv = env.clone();
+                        cenv.push_scope();
+                        cenv.define(param, value.clone());
+                        let frame = match frame_path {
+                            Some(p) => frames.get(p),
+                            None => frames.get(&[]),
+                        };
+                        match crate::eval::eval(
+                            body,
+                            &mut cenv,
+                            frame,
+                            host,
+                            components,
+                            &mut spawned,
+                        ) {
+                            Ok(v) => crate::eval::settle_promise(result, v, true, &mut spawned),
+                            Err(e) => {
+                                let reason = e.caught_value();
+                                crate::eval::settle_promise(result, reason, false, &mut spawned)
+                            }
+                        }
+                    }
+                }
+            }
+            EffectJob::Resume {
+                af,
+                seg,
+                bind,
+                completes,
+                call_env,
+                result,
+                frame_path,
+                incoming,
+            } => {
+                let mut cenv = call_env.clone();
+                if let Some(v) = incoming {
+                    if *completes {
+                        // `return await p` — the resolved value completes.
+                        crate::eval::settle_promise(result, v.clone(), true, &mut spawned);
+                        continue;
+                    }
+                    if let Some(b) = bind {
+                        cenv.define(b, v.clone());
+                    }
+                }
+                let frame = match frame_path {
+                    Some(p) => frames.get(p),
+                    None => frames.get(&[]),
+                };
+                crate::eval::run_async_step(
+                    af.clone(),
+                    *seg,
+                    &mut cenv,
+                    frame,
+                    host,
+                    components,
+                    &mut spawned,
+                    result.clone(),
+                    frame_path.clone(),
+                );
+            }
+        }
+    }
+    Ok(spawned)
+}
+
+/// Drain a job queue until empty (M2-T07): each job's spawned continuations
+/// re-enter the queue, so chained .then and multi-await async fns resolve
+/// within one drain. Guarded against runaway cycles.
+fn drain_jobs(
+    queue: Vec<EffectJob>,
     frames: &mut FrameStore,
     host: &mut dyn Host,
     components: &[r2n_ir::runtime::RuntimeComponent],
     strict: bool,
 ) -> Result<(), RuntimeError> {
-    for e in effects {
-        let mut env = e.env.clone();
-        // Hook handles inside the body (refs, setters) live in the owning
-        // component's frame — resolve it by path, not a throwaway.
-        let frame = match &e.frame_path {
-            Some(p) => frames.get(p),
-            None => unreachable!("every EffectBody carries a frame path"),
-        };
-        if strict {
-            // React StrictMode dev double-invoke: setup -> cleanup ->
-            // setup, surfacing impure effects.
-            run_effect_body(&e.body, &mut env, frame, host, components)?;
-            if let Some(cleanup) =
-                crate::eval::cleanup_of(&e.body, &env, true, e.frame_path.clone())
-            {
-                let mut cenv = cleanup.env.clone();
-                run_effect_body(&cleanup.body, &mut cenv, frame, host, components)?;
-            }
-            let mut env2 = e.env.clone();
-            run_effect_body(&e.body, &mut env2, frame, host, components)?;
-        } else {
-            run_effect_body(&e.body, &mut env, frame, host, components)?;
+    let mut q: std::collections::VecDeque<EffectJob> = queue.into();
+    let mut guard = 0;
+    while let Some(job) = q.pop_front() {
+        guard += 1;
+        if guard > 10_000 {
+            return Err(RuntimeError::new("job queue exceeded 10000 continuations"));
+        }
+        let spawned = run_jobs(&[job], frames, host, components, strict)?;
+        for j in spawned {
+            q.push_back(j);
         }
     }
     Ok(())
@@ -1733,7 +1894,7 @@ fn setup_class_env(
     frames: &mut FrameStore,
     host: &mut dyn Host,
     template: &RuntimeTemplate,
-    effects: &mut Vec<EffectBody>,
+    effects: &mut Vec<EffectJob>,
 ) -> Result<(), RuntimeError> {
     let Some(class) = class else {
         return Ok(());
@@ -1766,19 +1927,19 @@ fn setup_class_env(
         );
     }
     env.define("this", Value::Map(this_map));
-    let mut lifecycle_effects: Vec<EffectBody> = Vec::new();
+    let mut lifecycle_effects: Vec<EffectJob> = Vec::new();
     for (mname, m) in &class.methods {
         match mname.as_str() {
             "componentDidMount" | "componentDidUpdate" => {
                 let is_mount = cframe2.is_first_render();
                 let want = (mname.as_str() == "componentDidMount") == is_mount;
                 if want {
-                    lifecycle_effects.push(EffectBody {
+                    lifecycle_effects.push(EffectJob::Effect(EffectBody {
                         body: m.body.clone(),
                         env: env.clone(),
                         layout: true,
                         frame_path: Some(inst.to_vec()),
-                    });
+                    }));
                 }
             }
             "componentWillUnmount" => {
@@ -1805,14 +1966,21 @@ fn setup_class_env(
 
 #[allow(clippy::too_many_arguments)]
 fn run_layout_effects(
-    effects: &[EffectBody],
+    effects: &[EffectJob],
     frames: &mut FrameStore,
     host: &mut dyn Host,
     components: &[r2n_ir::runtime::RuntimeComponent],
     strict: bool,
-) -> Result<(), RuntimeError> {
-    let layout: Vec<&EffectBody> = effects.iter().filter(|e| e.layout).collect();
-    for e in layout {
+) -> Result<Vec<EffectJob>, RuntimeError> {
+    let mut spawned: Vec<EffectJob> = Vec::new();
+    let layout: Vec<&EffectJob> = effects
+        .iter()
+        .filter(|j| matches!(j, EffectJob::Effect(eb) if eb.layout))
+        .collect();
+    for job in layout {
+        let EffectJob::Effect(e) = job else {
+            continue;
+        };
         let mut env = e.env.clone();
         let frame = match &e.frame_path {
             Some(p) => frames.get(p),
@@ -1828,12 +1996,14 @@ fn run_layout_effects(
                 run_effect_body(&cleanup.body, &mut cenv, frame, host, components)?;
             }
             let mut env2 = e.env.clone();
-            run_effect_body(&e.body, &mut env2, frame, host, components)?;
+            spawned.extend(run_effect_body(
+                &e.body, &mut env2, frame, host, components,
+            )?);
         } else {
-            run_effect_body(&e.body, &mut env, frame, host, components)?;
+            spawned.extend(run_effect_body(&e.body, &mut env, frame, host, components)?);
         }
     }
-    Ok(())
+    Ok(spawned)
 }
 
 fn child_inst_path(parent: &[String], index: usize, kind: &str) -> Vec<String> {

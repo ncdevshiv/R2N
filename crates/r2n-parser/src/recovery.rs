@@ -584,6 +584,7 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                             args: vec![Expr::Arrow {
                                 params,
                                 body: Box::new(body),
+                                async_: false,
                             }],
                         };
                         self.expect(TokenKind::RightParen)?;
@@ -624,6 +625,39 @@ impl<'e, 'a> SpanParser<'e, 'a> {
 
     /// `( ident (, ident)* ) =>` starting at the current `(` — the
     /// token-list equivalent of the strict parser's lexer lookahead.
+    /// Does `async` here begin an async arrow — `async (params) => ` or
+    /// `async ident => `? (Token-vec lookahead; mirrors parser.rs.)
+    fn async_arrow_follows(&self) -> bool {
+        let mut j = self.pos + 1;
+        match self.tokens.get(j).map(|t| &t.kind) {
+            Some(TokenKind::LeftParen) => {
+                let mut depth = 1;
+                loop {
+                    j += 1;
+                    match self.tokens.get(j).map(|t| &t.kind) {
+                        Some(TokenKind::LeftParen) => depth += 1,
+                        Some(TokenKind::RightParen) => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => return false,
+                    }
+                }
+                matches!(
+                    self.tokens.get(j + 1).map(|t| &t.kind),
+                    Some(TokenKind::Arrow)
+                )
+            }
+            Some(TokenKind::Ident(_)) => matches!(
+                self.tokens.get(j + 1).map(|t| &t.kind),
+                Some(TokenKind::Arrow)
+            ),
+            _ => false,
+        }
+    }
+
     fn arrow_follows(&self) -> bool {
         if !self.check(&TokenKind::LeftParen) {
             return false;
@@ -708,6 +742,7 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                     Ok(Expr::Arrow {
                         params,
                         body: Box::new(body),
+                        async_: false,
                     })
                 } else {
                     self.bump();
@@ -715,6 +750,40 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                     self.expect(TokenKind::RightParen)?;
                     Ok(e)
                 }
+            }
+            TokenKind::Ident(name) if name == "async" && self.async_arrow_follows() => {
+                // `async (params) => body` / `async x => body` (mirrors parser.rs).
+                self.bump(); // `async`
+                let mut params = Vec::new();
+                if self.check(&TokenKind::LeftParen) {
+                    self.bump();
+                    if !self.check(&TokenKind::RightParen) {
+                        params.push(self.expect_ident()?);
+                        while self.check(&TokenKind::Comma) {
+                            self.bump();
+                            params.push(self.expect_ident()?);
+                        }
+                    }
+                    self.expect(TokenKind::RightParen)?;
+                } else {
+                    params.push(self.expect_ident()?);
+                }
+                self.expect(TokenKind::Arrow)?;
+                let body = self.parse_arrow_body()?;
+                Ok(Expr::Arrow {
+                    params,
+                    body: Box::new(body),
+                    async_: true,
+                })
+            }
+            TokenKind::Ident(name) if name == "await" => {
+                // `await expr` (mirrors parser.rs).
+                self.bump();
+                let value = self.parse_expr()?;
+                Ok(Expr::Await {
+                    value: Box::new(value),
+                    from_return: false,
+                })
             }
             TokenKind::Ident(name) if name == "throw" => {
                 // `throw value` (mirrors parser.rs).
@@ -766,7 +835,16 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                 // (cleanup-returning effect arrows). Mirrors parser.rs.
                 if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "return") {
                     self.bump();
-                    stmts.push(self.parse_expr()?);
+                    let v = self.parse_expr()?;
+                    // `return await p` marker (mirrors parser.rs).
+                    let v = match v {
+                        Expr::Await { value, .. } => Expr::Await {
+                            value,
+                            from_return: true,
+                        },
+                        other => other,
+                    };
+                    stmts.push(v);
                     if self.check(&TokenKind::Semicolon) {
                         self.bump();
                     }
@@ -811,7 +889,16 @@ impl<'e, 'a> SpanParser<'e, 'a> {
         while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
             if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "return") {
                 self.bump();
-                stmts.push(self.parse_expr()?);
+                let v = self.parse_expr()?;
+                // `return await p` marker (mirrors parser.rs).
+                let v = match v {
+                    Expr::Await { value, .. } => Expr::Await {
+                        value,
+                        from_return: true,
+                    },
+                    other => other,
+                };
+                stmts.push(v);
                 if self.check(&TokenKind::Semicolon) {
                     self.bump();
                 }

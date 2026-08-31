@@ -27,6 +27,10 @@ pub enum LowerError {
     NonRenderableReturn(String),
     /// A `list.map(...)` with the wrong shape was used in child position.
     InvalidListMap(String),
+    /// `await` used outside its supported positions (M2-T07: `await` is a
+    /// statement value inside an async body — anything else is a precise
+    /// compile error, not a silent miscompile).
+    UnsupportedAwait(String),
     /// A `<>` fragment was given an attribute other than `key` (React
     /// fragments accept only `key`; other attributes would be silently
     /// meaningless).
@@ -42,6 +46,7 @@ impl std::fmt::Display for LowerError {
             LowerError::InvalidFragmentProp(n) => {
                 write!(f, "fragment `<>` accepts only `key`, got `{n}`")
             }
+            LowerError::UnsupportedAwait(s) => write!(f, "unsupported await: {s}"),
         }
     }
 }
@@ -460,11 +465,29 @@ fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, Low
             then: Box::new(lower_expr(then, index)?),
             else_: Box::new(lower_expr(else_, index)?),
         },
-        Expr::Arrow { params, body } => JsExpr::Closure {
-            params: params.clone(),
-            captures: vec![], // captures computed lazily by the runtime frame
-            body: Box::new(lower_expr(body, index)?),
-        },
+        Expr::Arrow {
+            params,
+            body,
+            async_,
+        } => {
+            if *async_ {
+                JsExpr::AsyncFn {
+                    params: params.clone(),
+                    segments: lower_async_segments(body, index)?,
+                }
+            } else {
+                JsExpr::Closure {
+                    params: params.clone(),
+                    captures: vec![], // captures computed lazily by the runtime frame
+                    body: Box::new(lower_expr(body, index)?),
+                }
+            }
+        }
+        Expr::Await { .. } => {
+            return Err(LowerError::UnsupportedAwait(
+                "await outside an async function".to_string(),
+            ))
+        }
         Expr::Block(stmts) => JsExpr::Block(
             stmts
                 .iter()
@@ -519,6 +542,100 @@ fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, Low
             ))
         }
     })
+}
+
+/// Split an async arrow body into await-delimited segments (M2-T07). The
+/// supported await positions — the real-world surface — are statement
+/// values: `let x = await p;` / `x = await p;` / `await p;` / the terminal
+/// `return await p;`. Any await nested inside a larger expression is a
+/// precise compile error (a state-machine split of arbitrary expressions
+/// would be a CPS transform; the boundary is enforced, not silent).
+fn lower_async_segments(
+    body: &Expr,
+    index: &HashMap<String, usize>,
+) -> Result<Vec<crate::js::JsAsyncSegment>, LowerError> {
+    let stmts: Vec<&Expr> = match body {
+        Expr::Block(ss) => ss.iter().collect(),
+        single => vec![single],
+    };
+    let mut segments = Vec::new();
+    let mut cur: Vec<JsExpr> = Vec::new();
+    for e in stmts.iter() {
+        match e {
+            // `x = await p` (the parser lowers `let x = await p` to Assign).
+            Expr::Assign { target, value } if matches!(&**value, Expr::Await { .. }) => {
+                let bind = match &**target {
+                    Expr::Ident { name, .. } => name.clone(),
+                    _ => return Err(LowerError::UnsupportedAwait(
+                        "await target must be a plain binding (x = await p), not a member write"
+                            .to_string(),
+                    )),
+                };
+                let Expr::Await { value: v, .. } = &**value else {
+                    unreachable!("matched above")
+                };
+                segments.push(crate::js::JsAsyncSegment {
+                    stmts: std::mem::take(&mut cur),
+                    await_expr: Some(Box::new(lower_expr(v, index)?)),
+                    await_bind: Some(bind),
+                    await_completes: false,
+                });
+            }
+            // `await p;` — suspend, continue with the next statement. The
+            // terminal `return await p;` (from_return) completes the fn with
+            // the resolved value instead.
+            Expr::Await {
+                value: v,
+                from_return,
+            } => {
+                segments.push(crate::js::JsAsyncSegment {
+                    stmts: std::mem::take(&mut cur),
+                    await_expr: Some(Box::new(lower_expr(v, index)?)),
+                    await_bind: None,
+                    await_completes: *from_return,
+                });
+            }
+            _ => {
+                if contains_await(e) {
+                    return Err(LowerError::UnsupportedAwait(
+                        "await is only supported as a statement value: let x = await p; | x = await p; | await p; | return await p;".to_string(),
+                    ));
+                }
+                cur.push(lower_expr(e, index)?);
+            }
+        }
+    }
+    // Terminal segment: the async fn completes with its last statement's
+    // value. (A trailing `return await p` never reaches it — the resume
+    // settles the promise directly.)
+    segments.push(crate::js::JsAsyncSegment {
+        stmts: cur,
+        await_expr: None,
+        await_bind: None,
+        await_completes: false,
+    });
+    Ok(segments)
+}
+
+/// Does this expression contain an `await` OUTSIDE any nested arrow? (A
+/// nested arrow's awaits belong to IT, not to the enclosing async body.)
+fn contains_await(e: &Expr) -> bool {
+    match e {
+        Expr::Await { .. } => true,
+        Expr::Arrow { .. } => false,
+        Expr::Assign { target, value } => contains_await(target) || contains_await(value),
+        Expr::Binary { left, right, .. } => contains_await(left) || contains_await(right),
+        Expr::Unary { expr, .. } => contains_await(expr),
+        Expr::Ternary { cond, then, else_ } => {
+            contains_await(cond) || contains_await(then) || contains_await(else_)
+        }
+        Expr::Call { callee, args } => contains_await(callee) || args.iter().any(contains_await),
+        Expr::New { callee, args } => contains_await(callee) || args.iter().any(contains_await),
+        Expr::Member { base, .. } => contains_await(base),
+        Expr::Array(items) => items.iter().any(contains_await),
+        Expr::Block(stmts) => stmts.iter().any(contains_await),
+        _ => false,
+    }
 }
 
 fn lower_binop(op: BinOp) -> JsBinOp {
@@ -842,7 +959,7 @@ fn try_lower_list(
         _ => return Ok(None),
     };
     let (params, arrow_body) = match arrow {
-        Expr::Arrow { params, body } => (params, body),
+        Expr::Arrow { params, body, .. } => (params, body),
         _ => return Ok(None),
     };
     // The arrow body must be a JSX element (so each item becomes a node).
@@ -936,6 +1053,21 @@ fn subst_expr(e: JsExpr, from: &str, to: &str) -> JsExpr {
             cond: Box::new(subst_expr(*cond, from, to)),
             then: Box::new(subst_expr(*then, from, to)),
             else_: Box::new(subst_expr(*else_, from, to)),
+        },
+        JsExpr::AsyncFn { params, segments } => JsExpr::AsyncFn {
+            params,
+            segments: segments
+                .into_iter()
+                .map(|mut s| {
+                    s.stmts = s
+                        .stmts
+                        .into_iter()
+                        .map(|e| subst_expr(e, from, to))
+                        .collect();
+                    s.await_expr = s.await_expr.map(|a| Box::new(subst_expr(*a, from, to)));
+                    s
+                })
+                .collect(),
         },
         JsExpr::Throw { value } => JsExpr::Throw {
             value: Box::new(subst_expr(*value, from, to)),
@@ -1114,6 +1246,20 @@ fn collect_free(e: &JsExpr, bound: &std::collections::HashSet<String>, out: &mut
             collect_free(cond, bound, out);
             collect_free(then, bound, out);
             collect_free(else_, bound, out);
+        }
+        JsExpr::AsyncFn { params, segments } => {
+            let mut inner = bound.clone();
+            for p in params {
+                inner.insert(p.clone());
+            }
+            for s in segments {
+                for st in &s.stmts {
+                    collect_free(st, &inner, out);
+                }
+                if let Some(a) = &s.await_expr {
+                    collect_free(a, &inner, out);
+                }
+            }
         }
         JsExpr::Throw { value } => collect_free(value, bound, out),
         JsExpr::Try {
