@@ -237,7 +237,7 @@ phases:
 
   - id: "M1"
     name: "React Compatibility — Level 1"
-    status: "in-progress"   # props & children propagation done (M1-T01); hooks/keys/context remain
+    status: "done"   # all 18 tasks incl. conformance suite v1 + react version
     window: { start_week: 7, end_week: 12 }
     color: "#34d399"
     blurb: "Behavioral compatibility with React core: full hook set, keys, context, effects, class components, error boundaries, portals, Suspense — validated by a behavioral conformance suite, not API presence."
@@ -309,11 +309,11 @@ phases:
       - id: "M1-T17"
         title: "Conformance suite v1 — behavioral tests (observable behavior, not API presence)"
         priority: "P0"
-        done: false
+        done: true
       - id: "M1-T18"
         title: "react_compatibility_version recorded per artifact"
         priority: "P2"
-        done: false
+        done: true
 
   - id: "M2"
     name: "JavaScript Compatibility — Level 2"

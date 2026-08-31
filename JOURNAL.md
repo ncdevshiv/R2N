@@ -960,3 +960,41 @@ carry them (byte-level: JSON has no StrictMode marker, no flag).
 **CHOSE**
 Serialization-level production stripping + dev flag. 4 tests; suite 153;
 records updated (M1 16/18, 52/106).
+
+## 2026-08-30 — Entry 22: M1-T17/T18 Conformance Suite + react_version — M1 COMPLETE
+
+**PLAN**
+Close M1 with its two remaining tasks — and the milestone. The conformance
+suite is the roadmap's exit gate ("validated by a behavioral conformance
+suite, not API presence"); the artifact must record the React semantics
+level it implements.
+
+**WHAT**
+- `tests/conformance.rs` — TEN CONF-NN checks, each pinning ONE React
+  semantic via observable behavior (rendered tree / patch stream): minimal
+  patches, keyed identity, parent-scope children, context propagation,
+  effect cleanup ordering, boundary capture, suspense fallback, class
+  this/setState/lifecycle, portal rendering parent, StrictMode dev-vs-prod.
+  Behavior-first assertions only — no API-presence checks.
+- `ArtifactManifest.react_version` (18.2.0 — the React semantics level
+  implemented) stamped alongside format/compiler versions; round-trips
+  through artifact JSON.
+- Records errors found by the cross-surface check: my batched edits
+  duplicated M1-T18 into the toml T17 slot and left the M1 phase status
+  in-progress; the CI check caught all of it (yaml/toml id sets differ ->
+  CHECKLIST 'in progress' vs tasks 'done' -> README/ROADMAP tables).
+  All surfaces now agree: M1 DONE 18/18, 54/106.
+
+**WHY**
+A conformance suite is the only honest "compatibility" claim: it asserts
+what the USER observes, not which functions exist. recording the React
+version per artifact makes the claim auditable at runtime.
+
+**OPTIONS**
+- API-presence module tests: rejected (fake by definition).
+- Stamping React version in README only: rejected — the artifact must
+  carry it (consumers verify before executing, like the ABI rules).
+
+**CHOSE**
+Behavior-first conformance suite + artifact stamp. Suite 163; records
+updated (M1 18/18, 54/106).

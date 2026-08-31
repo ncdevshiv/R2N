@@ -334,7 +334,7 @@ done = true
 [[phases]]
 id = "M1"
 name = "React Compatibility — Level 1"
-status = "in-progress"
+status = "done"
 start_week = 7
 end_week = 12
 color = "#34d399"
@@ -440,13 +440,13 @@ done = true
 id = "M1-T17"
 title = "Conformance suite v1 — behavioral tests (observable behavior, not API presence)"
 priority = "P0"
-done = false
+done = true
 
 [[phases.tasks]]
 id = "M1-T18"
 title = "react_compatibility_version recorded per artifact"
 priority = "P2"
-done = false
+done = true
 
 [[phases]]
 id = "M2"
