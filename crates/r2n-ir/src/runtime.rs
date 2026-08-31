@@ -85,6 +85,10 @@ pub struct ArtifactManifest {
     /// Version of the compiler that produced this artifact.
     #[serde(default)]
     pub compiler_version: (u32, u32, u32),
+    /// The React version whose behavioral semantics this artifact
+    /// implements (conformance claim; M1-T18).
+    #[serde(default)]
+    pub react_version: (u32, u32, u32),
 }
 
 impl RuntimeTemplate {
@@ -94,10 +98,15 @@ impl RuntimeTemplate {
             .map(|p| p.parse().unwrap_or(0))
             .collect();
         parts.resize(3, 0);
+        // The React semantics level this artifact implements: Level 1
+        // (M1) — hooks, keys, context, effects, class components, error
+        // boundaries, portals, Suspense — mirrors React 18's core.
+        let react = [18, 2, 0];
         Self {
             manifest: ArtifactManifest {
                 format_version: ARTIFACT_FORMAT_VERSION,
                 compiler_version: (parts[0], parts[1], parts[2]),
+                react_version: (react[0], react[1], react[2]),
             },
             ..Self::default()
         }
