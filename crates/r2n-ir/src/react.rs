@@ -51,6 +51,14 @@ pub enum ReactNode {
         value: JsExpr,
         children: Vec<ReactNode>,
     },
+    /// A portal: `<Portal target="class">` — the children render under the
+    /// first host element with `className == target` (the RENDERING
+    /// parent), while identity, keys, and event dispatch follow the
+    /// LOGICAL position (React portal semantics).
+    Portal {
+        target: String,
+        children: Vec<ReactNode>,
+    },
     /// The splice point for a parent's `children` prop inside a child
     /// component's body (`React children composition`). Lowered from the
     /// `children` identifier wherever it appears in render position. At

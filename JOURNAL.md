@@ -846,3 +846,49 @@ during partial re-renders.
 **CHOSE**
 Boundary protocol in the Err arm, cursor reset reuse, setter-based state
 write. 4 tests; suite 141; records updated (M1 13/18, 49/106).
+
+## 2026-08-30 — Entry 19: M1-T14 Portals
+
+**PLAN**
+React portal: children rendered under a DIFFERENT parent element than their
+logical position, while identity/keys stay logical. Subset form:
+`<Portal target="className">` — children attach under the first host
+element with that class.
+
+**WHAT**
+- IR `ReactNode::Portal { target, children }`; `RenderedNode::Portal`
+  wrapper; special-tag lowering (like Provider, no component lookup);
+  subst/free-vars/return-gate arms.
+- Diff: a per-pass pre-scan (`resolve_portal_targets`) records the paths
+  of Host nodes by className; ids are PRE-ASSIGNED path-order
+  (`preassign_ids` — preserved old ids, fresh ids for new subtrees) so the
+  portal arm can resolve its target's id regardless of traversal order;
+  the portal's children diff with parent = target id.
+- The old portal is located by path in the OLD tree (`locate_node`) and
+  its children matched by key — without this, every re-render created
+  fresh portal nodes and LEFT THE OLD ONES (duplicate content, caught by
+  the state-update test: two `<p>11</p>`).
+- Renderer: patch creates with sparse indices (portal children targeting a
+  parent whose child count the diff doesn't know) now clamp instead of
+  panic (`insert(index.min(len))`) — append semantics.
+- Missing target: children fall back to the logical parent (no crash).
+
+**WHY**
+Portals are the modal/tooltip/toast primitive. The two bugs (duplicate
+content without old-node matching; index overflow into an unknown child
+count) are exactly the class of defects the ABI boundary surfaces — the
+patch stream carries parent ids and indices, and portal attach breaks both
+assumptions.
+
+**OPTIONS**
+- Portals via a special root per target: rejected — the patch stream is
+  single-tree; the renderer's sparse-index clamp is the minimal honest
+  accommodation.
+- Event bubbling differences (React: portal events bubble through the
+  LOGICAL tree): our handlers are bound to node ids at dispatch; a portal
+  node's handler is registered in the logical traversal — already correct,
+  no change needed.
+
+**CHOSE**
+Pre-assigned ids + old-node location. 4 tests; suite 145; records updated
+(M1 14/18, 50/106).
