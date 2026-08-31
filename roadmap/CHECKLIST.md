@@ -1,7 +1,7 @@
 # R2N — Complete Execution Checklist
 
 > **R2N — React to Native** — Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime
-> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **57/106** tasks done (54%).
+> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **58/106** tasks done (55%).
 > Audit basis: every task was verified against the actual implementation and test suite (54 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
 
 **How to use:** check items off in the interactive tracker ([index.html](index.html)) — it saves live in your browser. This file, [roadmap.yaml](roadmap.yaml), and [roadmap.toml](roadmap.toml) are the portable record; update them when a milestone closes.
@@ -94,14 +94,14 @@ _Behavioral compatibility with React core: full hook set, keys, context, effects
 
 ## M2 — JavaScript Compatibility — Level 2
 
-`IN PROGRESS` · weeks 12–20 · progress **3/15** (20%)
+`IN PROGRESS` · weeks 12–20 · progress **4/15** (27%)
 
 _Full ECMAScript semantics in the compatibility engine: closures, classes, prototypes, coercion, exceptions, promises, generators, modules — the layer that makes arbitrary React code actually run._
 
 - [x] **P0** — Full value model: Undefined/Null/Boolean/Number/BigInt/String/Symbol/Object/Function/External: `Value` gains Undefined (keyword literal), BigInt(i64), Symbol(id/key — identity-distinct, `Symbol(key)` builtin), Object (shared mutable property bag — `Object()` builtin, member get/set/index, missing prop → undefined), Function (first-class: arrows assigned to bindings are callable with param binding, missing arg → undefined), External (opaque handle); ECMA ToBoolean (undefined/null/±0/NaN/""/0n falsy) and ToNumber (undefined→NaN, null→0, bool→0|1, string parse); `typeof` builtin ("undefined"/"bigint"/"symbol"/"object"/"function"/"external"); Closure eval now yields a real Function value (was Null) (tests/value_model.rs, 7 tests)
 - [x] **P0** — Objects — dynamic properties, prototypes, shape-friendly layout: `Value::Object(Rc<RefCell<ObjData>>)` — own props + `proto` link; reads walk the prototype chain (missing → undefined); writes create own data props (shadowing); `Object.create(proto)` / `Object.create(null)` (no proto), `Object.getPrototypeOf(o)`, `o.__proto__` read (null when none) and write (sets/swaps the link, null clears); `Object()` constructor (own empty bag, per-object isolation); `__proto__ = p` assignment validated (object-or-null). Prototype chain now a real walk, not a flat bag (tests/prototypes.rs, 6 tests)
 - [x] **P0** — Closures & lexical environments with correct capture semantics: `Env` frames are now SHARED (`Rc<RefCell<BTreeMap>>`) — a closure captures its lexical env by reference (clone of the frame vector), so later writes to captured bindings are visible (JS semantics, not a snapshot); `Value::Function { params, body, captured }` invoked against the CAPTURED env (params in a child scope) — a closure called from a different scope does not see the caller's shadowing; nested closures chain to outer params; block-bodied arrows now support `let`/`const` locals (scoped assignments — the parser previously treated `let` as a variable, a real gap closures needed); Function equality is identity-based (partial_eq by ptr) (tests/closures.rs, 5 tests)
-- [ ] **P0** — Classes, this, new, prototype chain
+- [x] **P0** - Classes, this, new, prototype chain: `new P(args)` allocates an instance whose prototype carries the class METHODS as functions, runs the ES `constructor` with this bound, returns the instance; this.x sets own props; METHOD calls bind the receiver via call_value this_arg; lower_class branches extends Component (React machinery) vs ES class value; strict-mode this outside a member call = undefined, not unbound; full ES class B extends A inheritance is a documented follow-on (tests/es_classes.rs, 5 tests)
 - [ ] **P0** — Equality & coercion — == vs ===, ToPrimitive, ToString/ToNumber
 - [ ] **P0** — Exceptions — try/catch/finally propagation across calls
 - [ ] **P0** — Promises + async/await with scheduler-driven continuations

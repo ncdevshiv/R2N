@@ -262,6 +262,49 @@ fn lower_class(
     c: &ClassComponent,
     index: &HashMap<String, usize>,
 ) -> Result<RuntimeComponent, LowerError> {
+    let is_react = c.extends.as_deref() == Some("Component");
+    // Non-React (ES) classes are VALUES: `new P(...)` allocates instances
+    // with the class's methods on their prototype. No render body.
+    if !is_react {
+        let state = match &c.state {
+            Some(e) => Some(lower_expr(e, index)?),
+            None => None,
+        };
+        let mut methods = Vec::new();
+        for m in &c.methods {
+            let body_stmts: Vec<JsExpr> = m
+                .body
+                .iter()
+                .map(|st| match st {
+                    Stmt::Let { name, value } => Ok(JsExpr::Assign {
+                        target: Box::new(JsExpr::Var(name.clone())),
+                        value: Box::new(lower_expr(value, index)?),
+                    }),
+                    Stmt::Const { name, value } => Ok(JsExpr::Assign {
+                        target: Box::new(JsExpr::Var(name.clone())),
+                        value: Box::new(lower_expr(value, index)?),
+                    }),
+                    Stmt::Return(expr) => Ok(lower_expr(expr, index)?),
+                    Stmt::Expr(e) => Ok(lower_expr(e, index)?),
+                })
+                .collect::<Result<_, _>>()?;
+            methods.push((
+                m.name.clone(),
+                ClassMethod {
+                    params: m.params.clone(),
+                    body: JsExpr::Block(body_stmts),
+                },
+            ));
+        }
+        return Ok(RuntimeComponent {
+            name: c.name.clone(),
+            params: Vec::new(),
+            captures: Vec::new(),
+            bindings: Vec::new(),
+            body: ReactNode::Text(JsExpr::Lit(r2n_ast::lit::Literal::Null)),
+            class: Some(ClassInfo { state, methods }),
+        });
+    }
     let mut out = LoweredBody {
         bindings: Vec::new(),
         body: ReactNode::Text(JsExpr::Lit(r2n_ast::lit::Literal::Null)),
@@ -431,6 +474,13 @@ fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, Low
         Expr::Assign { target, value } => JsExpr::Assign {
             target: Box::new(lower_expr(target, index)?),
             value: Box::new(lower_expr(value, index)?),
+        },
+        Expr::New { callee, args } => JsExpr::New {
+            callee: Box::new(lower_expr(callee, index)?),
+            args: args
+                .iter()
+                .map(|a| lower_expr(a, index))
+                .collect::<Result<Vec<_>, _>>()?,
         },
         Expr::Element(_) => {
             return Err(LowerError::InvalidListMap(
@@ -826,6 +876,10 @@ fn subst_expr(e: JsExpr, from: &str, to: &str) -> JsExpr {
             callee: Box::new(subst_expr(*callee, from, to)),
             args: args.into_iter().map(|a| subst_expr(a, from, to)).collect(),
         },
+        JsExpr::New { callee, args } => JsExpr::New {
+            callee: Box::new(subst_expr(*callee, from, to)),
+            args: args.into_iter().map(|a| subst_expr(a, from, to)).collect(),
+        },
         JsExpr::Closure {
             params,
             captures,
@@ -966,6 +1020,12 @@ fn collect_free(e: &JsExpr, bound: &std::collections::HashSet<String>, out: &mut
         }
         JsExpr::Un { expr, .. } => collect_free(expr, bound, out),
         JsExpr::Call { callee, args } => {
+            collect_free(callee, bound, out);
+            for a in args {
+                collect_free(a, bound, out);
+            }
+        }
+        JsExpr::New { callee, args } => {
             collect_free(callee, bound, out);
             for a in args {
                 collect_free(a, bound, out);

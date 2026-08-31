@@ -35,6 +35,11 @@ pub enum JsExpr {
         callee: Box<JsExpr>,
         args: Vec<JsExpr>,
     },
+    /// `new Constructor(args...)` — allocate an ES class instance.
+    New {
+        callee: Box<JsExpr>,
+        args: Vec<JsExpr>,
+    },
     /// A closure over `captures` with `params` and `body`. Used for arrow fns
     /// and for component render functions.
     Closure {

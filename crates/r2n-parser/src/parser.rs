@@ -135,10 +135,18 @@ impl<'a> Parser<'a> {
             return Err(self.err("expected `extends` after class name"));
         }
         self.advance()?;
-        if !matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "Component") {
-            return Err(self.err("class components must extend `Component`"));
+        if self.check(&TokenKind::LeftBrace) {
+            return Err(self.err("expected `extends` after class name"));
         }
-        self.advance()?;
+        // `extends X` — Component (React base) or any base class.
+        let extends = match &self.current.kind {
+            TokenKind::Ident(kw) => {
+                let e = kw.clone();
+                self.advance()?;
+                Some(e)
+            }
+            _ => None,
+        };
         self.expect(TokenKind::LeftBrace)?;
         let mut state = None;
         let mut methods = Vec::new();
@@ -189,6 +197,7 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::RightBrace)?;
         Ok(ClassComponent {
             name,
+            extends,
             state,
             methods,
         })
@@ -561,6 +570,29 @@ impl<'a> Parser<'a> {
             TokenKind::Ident(name) if name == "false" => {
                 self.advance()?;
                 Ok(Expr::Literal(r2n_ast::lit::Literal::Bool(false)))
+            }
+            TokenKind::Ident(name) if name == "new" => {
+                // `new Callee(args...)` — the callee is an identifier; the
+                // args are parenthesized (M2-T04).
+                self.advance()?;
+                let callee = self.expect_ident()?;
+                self.expect(TokenKind::LeftParen)?;
+                let mut args = Vec::new();
+                if !self.check(&TokenKind::RightParen) {
+                    args.push(self.parse_expr()?);
+                    while self.check(&TokenKind::Comma) {
+                        self.advance()?;
+                        args.push(self.parse_expr()?);
+                    }
+                }
+                self.expect(TokenKind::RightParen)?;
+                Ok(Expr::New {
+                    callee: Box::new(Expr::Ident {
+                        name: callee,
+                        is_component: false,
+                    }),
+                    args,
+                })
             }
             TokenKind::Ident(name) if name == "null" => {
                 self.advance()?;

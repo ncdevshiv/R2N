@@ -1114,3 +1114,46 @@ exactly those observable behaviors.
 **CHOSE**
 Shared-frame lexical env; 5 tests (lexical shadowing, live writes, nested
 closures, cross-scope use, identity). 181 green; records (M2 3/15, 57/106).
+
+## 2026-08-31 — Entry 26: M2-T04 ES Classes, this, new
+
+**PLAN**
+M1-T12 built React class COMPONENTS (extends Component). M2-T04 is the
+general ES class: `new P(args)`, constructors, prototype methods, `this`
+binding — distinct from the React component machinery.
+
+**WHAT**
+- `new` expression: AST `Expr::New`, `JsExpr::New`, parser (strict +
+  recovery), lowering (incl. subst/free-vars).
+- `lower_class` branches: `extends Component` keeps the React component
+  path (no render requirement for others); ES classes are VALUES whose
+  methods become prototype functions — no render body.
+- Runtime `JsExpr::New`: resolves the class by name in the component
+  table; allocates the instance (own props empty, proto = a per-class
+  prototype carrying the methods as Functions); runs `constructor` with
+  `this` = instance and args bound; returns the instance.
+- Method-call this binding: `call_value` gained `this_arg`; member callees
+  (`o.m()`) resolve the callee via `get_prop` (prototype walk — inherited
+  methods work) and pass the receiver as `this`. `this.x = v` writes own
+  props via the Object assign path.
+- Strict-mode `this` outside a member call = `undefined` (ES parity —
+  previously an unbound-variable error).
+- DOCUMENTED FOLLOW-ON: `class B extends A` (user-defined base) is not yet
+  constructor-chainable; only `extends Object`/`extends Component` are
+  meaningful bases. Recorded in the checklist note.
+
+**WHY**
+Classes with `new`/`this` are the core object-orientation semantic *every*
+JS library uses; without them the compatibility layer cannot run modern
+libraries. The React-vs-ES branching in lower_class is deliberate: the
+two forms share the Value/instance machinery but differ in what a render
+is.
+
+**OPTIONS**
+- Route ES classes through the React component frame machinery: rejected —
+  that path is render-scoped (FrameStore, effects); ES instances are
+  VALUE-realm objects.
+
+**CHOSE**
+Value-realm classes + this-binding at call. 5 tests; suite 186; records
+(M2 4/15, 58/106).

@@ -186,10 +186,15 @@ impl<'e, 'a> SpanParser<'e, 'a> {
             return Err(self.err("expected `extends` after class name"));
         }
         self.bump();
-        if !matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "Component") {
-            return Err(self.err("class components must extend `Component`"));
-        }
-        self.bump();
+        // `extends X` — Component (React base) or any base class.
+        let extends = match &self.cur().kind {
+            TokenKind::Ident(kw) => {
+                let e = kw.clone();
+                self.bump();
+                Some(e)
+            }
+            _ => None,
+        };
         self.expect(TokenKind::LeftBrace)?;
         let mut state = None;
         let mut methods = Vec::new();
@@ -238,6 +243,7 @@ impl<'e, 'a> SpanParser<'e, 'a> {
         self.expect(TokenKind::RightBrace)?;
         Ok(ClassComponent {
             name,
+            extends,
             state,
             methods,
         })
@@ -656,6 +662,28 @@ impl<'e, 'a> SpanParser<'e, 'a> {
             TokenKind::Ident(name) if name == "false" => {
                 self.bump();
                 Ok(Expr::Literal(Literal::Bool(false)))
+            }
+            TokenKind::Ident(name) if name == "new" => {
+                // `new Callee(args...)` (mirrors parser.rs).
+                self.bump();
+                let callee = self.expect_ident()?;
+                self.expect(TokenKind::LeftParen)?;
+                let mut args = Vec::new();
+                if !self.check(&TokenKind::RightParen) {
+                    args.push(self.parse_expr()?);
+                    while self.check(&TokenKind::Comma) {
+                        self.bump();
+                        args.push(self.parse_expr()?);
+                    }
+                }
+                self.expect(TokenKind::RightParen)?;
+                Ok(Expr::New {
+                    callee: Box::new(Expr::Ident {
+                        name: callee,
+                        is_component: false,
+                    }),
+                    args,
+                })
             }
             TokenKind::Ident(name) if name == "null" => {
                 self.bump();

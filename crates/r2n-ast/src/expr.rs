@@ -25,6 +25,8 @@ pub enum Expr {
     Unary { op: UnOp, expr: Box<Expr> },
     /// Function call: `callee(args...)`. Callee may be a component identifier.
     Call { callee: Box<Expr>, args: Vec<Expr> },
+    /// `new Callee(args...)` — allocates an instance (ES classes).
+    New { callee: Box<Expr>, args: Vec<Expr> },
     /// Assignment: `target = value` (target is an identifier or a member
     /// access). Right-associative; used by `useRef`'s `.current` writes.
     Assign { target: Box<Expr>, value: Box<Expr> },
@@ -57,6 +59,16 @@ impl fmt::Display for Expr {
             Expr::Member { base, prop } => write!(f, "{base}.{prop}"),
             Expr::Binary { op, left, right } => write!(f, "({left} {} {right})", op.as_str()),
             Expr::Unary { op, expr } => write!(f, "({}{expr})", op.as_str()),
+            Expr::New { callee, args } => {
+                write!(f, "new {callee}(")?;
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{a}")?;
+                }
+                write!(f, ")")
+            }
             Expr::Call { callee, args } => {
                 write!(f, "{callee}(")?;
                 for (i, a) in args.iter().enumerate() {
