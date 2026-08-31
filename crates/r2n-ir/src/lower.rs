@@ -68,11 +68,12 @@ fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, L
     // 1. Build the component name -> index table.
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut components: Vec<RuntimeComponent> = Vec::new();
+    let mut generators: Vec<crate::runtime::GeneratorIr> = Vec::new();
     for decl in &program.decls {
         let name = match decl {
             Decl::Component(c) => c.name.clone(),
             Decl::Class(c) => c.name.clone(),
-            Decl::Import(_) | Decl::ExportDefault(_) => continue,
+            Decl::Import(_) | Decl::ExportDefault(_) | Decl::GeneratorFn(_) => continue,
         };
         index.insert(name.clone(), components.len());
         components.push(RuntimeComponent {
@@ -102,6 +103,9 @@ fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, L
                 let idx = index[&c.name];
                 components[idx] = lower_class(c, &index)?;
             }
+            Decl::GeneratorFn(g) => {
+                generators.push(lower_generator_fn(g, &index)?);
+            }
             _ => {}
         }
     }
@@ -109,6 +113,7 @@ fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, L
     let mut template = RuntimeTemplate {
         components,
         root,
+        generators,
         manifest: RuntimeTemplate::new().manifest,
         strict_mode: false,
     };
@@ -488,6 +493,11 @@ fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, Low
                 "await outside an async function".to_string(),
             ))
         }
+        Expr::Yield { .. } => {
+            return Err(LowerError::UnsupportedAwait(
+                "yield outside a generator function".to_string(),
+            ))
+        }
         Expr::Block(stmts) => JsExpr::Block(
             stmts
                 .iter()
@@ -544,12 +554,54 @@ fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, Low
     })
 }
 
-/// Split an async arrow body into await-delimited segments (M2-T07). The
-/// supported await positions — the real-world surface — are statement
-/// values: `let x = await p;` / `x = await p;` / `await p;` / the terminal
-/// `return await p;`. Any await nested inside a larger expression is a
-/// precise compile error (a state-machine split of arbitrary expressions
-/// would be a CPS transform; the boundary is enforced, not silent).
+/// Lower a top-level `function*` declaration (M2-T08): the body splits into
+/// yield-delimited segments (the same machine async fns use — generators are
+/// the PULL-based twin: `next()` advances instead of a scheduler).
+fn lower_generator_fn(
+    g: &r2n_ast::program::GeneratorFn,
+    index: &HashMap<String, usize>,
+) -> Result<crate::runtime::GeneratorIr, LowerError> {
+    // Statements -> expression list (the block model: let/const are Assigns,
+    // `return e` is the terminal value; `return yield v` marks the yield).
+    let exprs: Vec<Expr> = g
+        .body
+        .iter()
+        .map(|st| match st {
+            r2n_ast::program::Stmt::Let { name, value }
+            | r2n_ast::program::Stmt::Const { name, value } => Ok(Expr::Assign {
+                target: Box::new(Expr::Ident {
+                    name: name.clone(),
+                    is_component: false,
+                }),
+                value: Box::new(value.clone()),
+            }),
+            r2n_ast::program::Stmt::Expr(e) => Ok(e.clone()),
+            r2n_ast::program::Stmt::Return(e) => Ok(match e {
+                Expr::Yield { value, .. } => Expr::Yield {
+                    value: value.clone(),
+                    from_return: true,
+                },
+                other => other.clone(),
+            }),
+        })
+        .collect::<Result<_, _>>()?;
+    let refs: Vec<&Expr> = exprs.iter().collect();
+    let segments = lower_segments(&refs, index, true)?;
+    Ok(crate::runtime::GeneratorIr {
+        name: g.name.clone(),
+        params: g.params.clone(),
+        segments,
+    })
+}
+
+/// Split a segmented-fn body into await/yield-delimited segments (M2-T07
+/// async, M2-T08 generators — the same machine; generators are the
+/// PULL-based twin). The supported suspension positions — the real-world
+/// surface — are statement values: `let x = await p;` / `x = await p;` /
+/// `await p;` / the terminal `return await p;` (yield likewise). A
+/// suspension nested inside a larger expression is a precise compile error
+/// (a state-machine split of arbitrary expressions would be a CPS
+/// transform; the boundary is enforced, not silent).
 fn lower_async_segments(
     body: &Expr,
     index: &HashMap<String, usize>,
@@ -558,21 +610,39 @@ fn lower_async_segments(
         Expr::Block(ss) => ss.iter().collect(),
         single => vec![single],
     };
+    lower_segments(&stmts, index, false)
+}
+
+fn lower_segments(
+    stmts: &[&Expr],
+    index: &HashMap<String, usize>,
+    is_generator: bool,
+) -> Result<Vec<crate::js::JsAsyncSegment>, LowerError> {
+    let kw = if is_generator { "yield" } else { "await" };
     let mut segments = Vec::new();
     let mut cur: Vec<JsExpr> = Vec::new();
     for e in stmts.iter() {
         match e {
-            // `x = await p` (the parser lowers `let x = await p` to Assign).
-            Expr::Assign { target, value } if matches!(&**value, Expr::Await { .. }) => {
+            // `x = await p` / `let x = yield v` (the parser lowers let/const
+            // to Assign in both arrow blocks and generator bodies).
+            Expr::Assign { target, value }
+                if matches!(&**value, Expr::Await { .. } | Expr::Yield { .. }) =>
+            {
                 let bind = match &**target {
                     Expr::Ident { name, .. } => name.clone(),
-                    _ => return Err(LowerError::UnsupportedAwait(
-                        "await target must be a plain binding (x = await p), not a member write"
-                            .to_string(),
-                    )),
+                    _ => {
+                        return Err(LowerError::UnsupportedAwait(format!(
+                            "{kw} target must be a plain binding (x = {kw} v), not a member write"
+                        )))
+                    }
                 };
-                let Expr::Await { value: v, .. } = &**value else {
-                    unreachable!("matched above")
+                let v = match &**value {
+                    Expr::Await { value: v, .. } | Expr::Yield { value: Some(v), .. } => v,
+                    Expr::Yield { .. } => {
+                        // `let x = yield;` — value is undefined.
+                        &EMPTY_EXPR
+                    }
+                    _ => unreachable!("matched above"),
                 };
                 segments.push(crate::js::JsAsyncSegment {
                     stmts: std::mem::take(&mut cur),
@@ -581,9 +651,9 @@ fn lower_async_segments(
                     await_completes: false,
                 });
             }
-            // `await p;` — suspend, continue with the next statement. The
-            // terminal `return await p;` (from_return) completes the fn with
-            // the resolved value instead.
+            // `await p;` / `yield v;` / bare `yield;` — suspend, continue
+            // with the next statement. `from_return` (`return await p` /
+            // `return yield v`) completes the fn with the incoming value.
             Expr::Await {
                 value: v,
                 from_return,
@@ -595,19 +665,31 @@ fn lower_async_segments(
                     await_completes: *from_return,
                 });
             }
+            Expr::Yield { value, from_return } => {
+                let lowered = match value {
+                    Some(v) => lower_expr(v, index)?,
+                    None => JsExpr::Lit(r2n_ast::lit::Literal::Undefined),
+                };
+                segments.push(crate::js::JsAsyncSegment {
+                    stmts: std::mem::take(&mut cur),
+                    await_expr: Some(Box::new(lowered)),
+                    await_bind: None,
+                    await_completes: *from_return,
+                });
+            }
             _ => {
                 if contains_await(e) {
-                    return Err(LowerError::UnsupportedAwait(
-                        "await is only supported as a statement value: let x = await p; | x = await p; | await p; | return await p;".to_string(),
-                    ));
+                    return Err(LowerError::UnsupportedAwait(format!(
+                        "{kw} is only supported as a statement value: let x = {kw} v; | x = {kw} v; | {kw} v; | return {kw} v;"
+                    )));
                 }
                 cur.push(lower_expr(e, index)?);
             }
         }
     }
-    // Terminal segment: the async fn completes with its last statement's
-    // value. (A trailing `return await p` never reaches it — the resume
-    // settles the promise directly.)
+    // Terminal segment: the fn completes with its last statement's value.
+    // (A trailing `return await/yield` never reaches it — the resume
+    // settles/completes directly.)
     segments.push(crate::js::JsAsyncSegment {
         stmts: cur,
         await_expr: None,
@@ -617,11 +699,16 @@ fn lower_async_segments(
     Ok(segments)
 }
 
-/// Does this expression contain an `await` OUTSIDE any nested arrow? (A
-/// nested arrow's awaits belong to IT, not to the enclosing async body.)
+/// Placeholder for `let x = yield;` (yield with no value lowers to
+/// undefined). Never evaluated as an expression — the Yield arm above only
+/// reaches for it to keep the match exhaustive.
+static EMPTY_EXPR: Expr = Expr::Literal(r2n_ast::lit::Literal::Undefined);
+
+/// Does this expression contain an `await`/`yield` OUTSIDE any nested
+/// arrow? (A nested arrow's suspensions belong to IT.)
 fn contains_await(e: &Expr) -> bool {
     match e {
-        Expr::Await { .. } => true,
+        Expr::Await { .. } | Expr::Yield { .. } => true,
         Expr::Arrow { .. } => false,
         Expr::Assign { target, value } => contains_await(target) || contains_await(value),
         Expr::Binary { left, right, .. } => contains_await(left) || contains_await(right),

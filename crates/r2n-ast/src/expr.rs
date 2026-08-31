@@ -49,6 +49,16 @@ pub enum Expr {
         #[allow(dead_code)]
         async_: bool,
     },
+    /// `yield expr` — suspends a generator, producing expr (or undefined) as
+    /// the `{value, done: false}` result (M2-T08). Statement-position only
+    /// (`yield v;` / `let x = yield v;` / `x = yield v;` / `return yield v;`);
+    /// the lowerer rejects other positions. `from_return` marks the
+    /// `return yield` form (the next `next(arg)` COMPLETES the generator
+    /// with arg instead of resuming).
+    Yield {
+        value: Option<Box<Expr>>,
+        from_return: bool,
+    },
     /// `await expr` — suspends an async function at a segment boundary until
     /// expr's promise settles (M2-T07). Only valid as the statement value of
     /// an async body (`let x = await p;` / `x = await p;` / `await p;` /
@@ -125,6 +135,10 @@ impl fmt::Display for Expr {
                 }
             }
             Expr::Await { value, .. } => write!(f, "await {value}"),
+            Expr::Yield { value, .. } => match value {
+                Some(v) => write!(f, "yield {v}"),
+                None => write!(f, "yield"),
+            },
             Expr::Block(stmts) => {
                 write!(f, "{{")?;
                 for s in stmts {

@@ -353,7 +353,7 @@ phases:
       - id: "M2-T08"
         title: "Generators & iterator protocol"
         priority: "P1"
-        done: false
+        done: true
       - id: "M2-T09"
         title: "Modules — import/export/dynamic import + initialization order"
         priority: "P0"

@@ -1321,3 +1321,56 @@ StrictMode parity for effects while promises drain at defined points.
 **CHOSE**
 Segment state machine + EffectJob continuations. 17 tests; suite 225;
 records (M2 7/15, 61/106).
+
+## 2026-08-31 — Entry 30: M2-T08 Generators & iterator protocol
+
+**PLAN**
+Generators are the PULL-based twin of T07's async state machine: the same
+segment IR, a different driver (next() advances; no job queue). The new
+infrastructure is the GLOBAL env — top-level declarations must reach every
+component.
+
+**WHAT**
+- `function* name(params) { stmts }` declarations (both parser twins; the
+  only function-declaration form in the language). Bodies lower through the
+  SAME segment splitter as async (lower_segments generalized: await|yield
+  arms, is_generator keyword in errors). `let x = yield v` binds; `return
+  yield v` completes the generator with the next next()'s argument.
+- GLOBAL env: Runtime::new binds each GeneratorIr as Value::GeneratorFn in
+  a global env; Env::child_of now CHAINS parent frames (Rc-share + fresh
+  top) instead of isolating — reads walk to globals, defines stay local.
+  This also means component envs see their caller's render scope (a real
+  semantic widening, documented; previously "unbound" names error the same
+  way since globals are the only addition).
+- Generator instances: Value::Generator per call (lazy — nothing runs
+  before the first next(), pinned by test log order). next(arg): binds the
+  pending yield target, runs ONE segment, returns {value, done:false} or
+  completes {value, done:true}; post-done next()s are {undefined, true}
+  forever. Instance env persists across nexts (accumulator test).
+  return(v) -> {v, true}; throw(e) -> raises at the CALLER and kills the
+  instance (no catch segments in the supported surface — same honest
+  boundary as await-in-try).
+- Iterator protocol: iter_result = {value, done} objects; array iterators
+  .values()/.entries()/.keys() over a snapshot (Value::ArrayIter), same
+  protocol via .next().
+- yield restricted to statement positions; nested-in-expression or
+  outside-generator yields are precise compile errors; a nested arrow's
+  yields belong to it.
+
+**WHY**
+Generators power iterators, lazy sequences, and (later) the async-iterator
+and hook-testing patterns. Reusing the segment machine keeps ONE state-
+machine implementation in the codebase; the global env is the missing
+scope level the language needed anyway (T09 modules will extend it).
+
+**OPTIONS**
+- for...of loops consuming iterators: rejected for this task — no loop
+  syntax exists yet; manual next() chains pin the protocol observably.
+  for/for-of arrives with control-flow work.
+- Generators as job-based (yield = async-like suspension): rejected —
+  generators are PULL-based in ECMA; the caller's next() timing IS the
+  semantics.
+
+**CHOSE**
+Segment reuse + chained global env. 13 tests; suite 238; records (M2
+8/15, 62/106).

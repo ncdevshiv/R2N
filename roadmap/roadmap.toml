@@ -503,7 +503,7 @@ done = true
 id = "M2-T08"
 title = "Generators & iterator protocol"
 priority = "P1"
-done = false
+done = true
 
 [[phases.tasks]]
 id = "M2-T09"

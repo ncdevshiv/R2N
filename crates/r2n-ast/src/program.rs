@@ -14,6 +14,17 @@ pub enum Decl {
     Import(Import),
     /// `export default Name;` — marks the root component of the app.
     ExportDefault(String),
+    /// `function* name(params) { ... }` — a generator function (M2-T08).
+    /// The body is a statement list; `yield` splits it into segments.
+    GeneratorFn(GeneratorFn),
+}
+
+/// A top-level generator function declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeneratorFn {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: Vec<Stmt>,
 }
 
 /// A component definition.

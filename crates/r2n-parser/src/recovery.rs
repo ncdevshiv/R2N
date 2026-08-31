@@ -175,8 +175,41 @@ impl<'e, 'a> SpanParser<'e, 'a> {
             }
             TokenKind::Ident(kw) if kw == "class" => Ok(Decl::Class(self.parse_class()?)),
             TokenKind::Ident(kw) if kw == "export" => self.parse_export(),
+            TokenKind::Ident(kw) if kw == "function" => self.parse_generator_fn(),
             _ => Err(self.err("expected a declaration (import/component/export)")),
         }
+    }
+
+    /// `function* name(params) { stmts }` (mirrors parser.rs).
+    fn parse_generator_fn(&mut self) -> Result<Decl, ParseError> {
+        self.bump(); // `function`
+        if !self.check(&TokenKind::Star) {
+            return Err(self
+                .err("expected `function*` (only generator function declarations are supported)"));
+        }
+        self.bump(); // `*`
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::LeftParen)?;
+        let mut params = Vec::new();
+        if !self.check(&TokenKind::RightParen) {
+            params.push(self.expect_ident()?);
+            while self.check(&TokenKind::Comma) {
+                self.bump();
+                params.push(self.expect_ident()?);
+            }
+        }
+        self.expect(TokenKind::RightParen)?;
+        self.expect(TokenKind::LeftBrace)?;
+        let mut body = Vec::new();
+        while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
+            body.push(self.parse_stmt()?);
+        }
+        self.expect(TokenKind::RightBrace)?;
+        Ok(Decl::GeneratorFn(r2n_ast::program::GeneratorFn {
+            name,
+            params,
+            body,
+        }))
     }
 
     fn parse_class(&mut self) -> Result<ClassComponent, ParseError> {
@@ -785,6 +818,22 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                     from_return: false,
                 })
             }
+            TokenKind::Ident(name) if name == "yield" => {
+                // `yield` / `yield expr` (mirrors parser.rs).
+                self.bump();
+                let value = if self.check(&TokenKind::Semicolon)
+                    || self.check(&TokenKind::RightBrace)
+                    || self.check(&TokenKind::Eof)
+                {
+                    None
+                } else {
+                    Some(Box::new(self.parse_expr()?))
+                };
+                Ok(Expr::Yield {
+                    value,
+                    from_return: false,
+                })
+            }
             TokenKind::Ident(name) if name == "throw" => {
                 // `throw value` (mirrors parser.rs).
                 self.bump();
@@ -842,6 +891,10 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                             value,
                             from_return: true,
                         },
+                        Expr::Yield { value, .. } => Expr::Yield {
+                            value,
+                            from_return: true,
+                        },
                         other => other,
                     };
                     stmts.push(v);
@@ -893,6 +946,10 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                 // `return await p` marker (mirrors parser.rs).
                 let v = match v {
                     Expr::Await { value, .. } => Expr::Await {
+                        value,
+                        from_return: true,
+                    },
+                    Expr::Yield { value, .. } => Expr::Yield {
                         value,
                         from_return: true,
                     },
