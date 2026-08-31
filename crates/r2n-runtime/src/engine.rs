@@ -47,6 +47,14 @@ pub enum RenderedNode {
         text: String,
         key: String,
     },
+    /// A portal: children attach to a HOST ELEMENT OUTSIDE their logical
+    /// position (found by `className == target`), while identity follows
+    /// position. The diff resolves the render parent id.
+    Portal {
+        target: String,
+        children: Vec<RenderedNode>,
+        key: String,
+    },
 }
 
 /// Transparent fragment tag: its children reconcile directly at the parent.
@@ -250,12 +258,14 @@ impl Runtime {
         // so handlers on removed nodes disappear.
         let mut handlers = std::mem::take(&mut self.handlers);
         handlers.clear();
+        let portal_targets = resolve_portal_targets(&tree);
         let patches = diff(
             &mut self.id_map,
             &mut self.id_counter,
             self.prev.as_ref(),
             &tree,
             &mut handlers,
+            &portal_targets,
         );
         self.handlers = handlers;
         all.extend(patches);
@@ -854,6 +864,31 @@ fn render_node(
                 key: "frag".to_string(),
             }
         }
+        ReactNode::Portal { target, children } => {
+            let mut out = Vec::with_capacity(children.len());
+            for (i, c) in children.iter().enumerate() {
+                let child_node = child_path(node_path, i, &format!("#{i}"));
+                let mut rc = render_node(
+                    c,
+                    inst_path,
+                    &child_node,
+                    env,
+                    frames,
+                    scopes,
+                    splices,
+                    template,
+                    host,
+                    effects,
+                )?;
+                set_key(&mut rc, &format!("#{i}"));
+                out.push(rc);
+            }
+            RenderedNode::Portal {
+                target: target.clone(),
+                children: out,
+                key: "portal".to_string(),
+            }
+        }
         ReactNode::Fragment { children, .. } => {
             // A `<>...</>` group: no host element of its own. Rendered as the
             // transparent FRAGMENT host — the parent's children loop splices
@@ -989,15 +1024,91 @@ fn render_node(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Pre-pass for the diff: assign an id to EVERY path in the new tree (id
+/// values are opaque keys; path-order assignment is fine) and record the
+/// paths of Host nodes whose `className` matches a portal target. A portal
+///'s children attach under the FIRST such node.
+fn resolve_portal_targets(tree: &RenderedNode) -> std::collections::HashMap<String, Vec<String>> {
+    fn walk(
+        n: &RenderedNode,
+        path: &[String],
+        out: &mut std::collections::HashMap<String, Vec<String>>,
+    ) {
+        match n {
+            RenderedNode::Host {
+                props, children, ..
+            } => {
+                for (k, v) in props {
+                    if k == "className" {
+                        if let Value::Str(u) = v {
+                            let cls = String::from_utf16_lossy(u);
+                            out.entry(cls).or_default().push(path.join("/"));
+                        }
+                    }
+                }
+                for (i, c) in children.iter().enumerate() {
+                    let cp = child_path(path, i, c.key());
+                    walk(c, &cp, out);
+                }
+            }
+            RenderedNode::Text { .. } => {}
+            RenderedNode::Portal { children, .. } => {
+                for (i, c) in children.iter().enumerate() {
+                    let cp = child_path(path, i, c.key());
+                    walk(c, &cp, out);
+                }
+            }
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    walk(tree, &[], &mut out);
+    out
+}
+
+/// Assign ids to every node path in the new tree, in path order. Called
+/// before the diff traversal so portal children (which render under the
+/// target element, possibly LATER in document order) can resolve their
+/// target's id. Existing ids (from id_map) are preserved so reconciliation
+/// identity stays stable; fresh nodes get the next counter value.
+fn preassign_ids(
+    n: &RenderedNode,
+    path: &[String],
+    id_counter: &mut u64,
+    id_map: &HashMap<Vec<String>, NodeId>,
+    next_id_map: &mut HashMap<Vec<String>, NodeId>,
+) {
+    // Preserve reconciliation identity when the path existed; fresh
+    // subtrees (or reordered keyed nodes) get new ids in path order.
+    let id = id_map.get(path).copied().unwrap_or_else(|| {
+        let id = NodeId(*id_counter);
+        *id_counter += 1;
+        id
+    });
+    next_id_map.insert(path.to_vec(), id);
+    match n {
+        RenderedNode::Host { children, .. } | RenderedNode::Portal { children, .. } => {
+            for (i, c) in children.iter().enumerate() {
+                let cp = child_path(path, i, c.key());
+                preassign_ids(c, &cp, id_counter, id_map, next_id_map);
+            }
+        }
+        RenderedNode::Text { .. } => {}
+    }
+}
+
 fn diff(
     id_map: &mut HashMap<Vec<String>, NodeId>,
     id_counter: &mut u64,
     old: Option<&RenderedNode>,
     new: &RenderedNode,
     handlers: &mut HashMap<NodeId, Vec<(String, Value)>>,
+    portal_targets: &std::collections::HashMap<String, Vec<String>>,
 ) -> Vec<Patch> {
     let mut patches = Vec::new();
     let mut next_id_map = HashMap::new();
+    // Ids are assigned path-order before any diffing so portal children
+    // can reference their target's id regardless of traversal order.
+    preassign_ids(new, &[], id_counter, id_map, &mut next_id_map);
     diff_node(
         id_map,
         id_counter,
@@ -1009,6 +1120,8 @@ fn diff(
         &mut patches,
         &mut next_id_map,
         handlers,
+        portal_targets,
+        old,
     );
     *id_map = next_id_map;
     patches
@@ -1026,6 +1139,8 @@ fn diff_node(
     patches: &mut Vec<Patch>,
     next_id_map: &mut HashMap<Vec<String>, NodeId>,
     handlers: &mut HashMap<NodeId, Vec<(String, Value)>>,
+    portal_targets: &std::collections::HashMap<String, Vec<String>>,
+    old_tree: Option<&RenderedNode>,
 ) {
     let id = *id_map.get(path).unwrap_or(&{
         let id = NodeId(*id_counter);
@@ -1099,6 +1214,8 @@ fn diff_node(
                         patches,
                         next_id_map,
                         handlers,
+                        portal_targets,
+                        old_tree,
                     );
                 }
             } else if is_frag {
@@ -1112,6 +1229,8 @@ fn diff_node(
                     patches,
                     next_id_map,
                     handlers,
+                    portal_targets,
+                    old_tree,
                 );
             } else {
                 if let Some(RenderedNode::Host { props: op, .. }) = old {
@@ -1127,6 +1246,57 @@ fn diff_node(
                     patches,
                     next_id_map,
                     handlers,
+                    portal_targets,
+                    old_tree,
+                );
+            }
+        }
+        RenderedNode::Portal {
+            target, children, ..
+        } => {
+            // Portal children render under the FIRST host element with
+            // className == target (found anywhere in the tree). The target
+            // node's id is looked up in next_id_map by scanning the new
+            // tree: ids are path-keyed; resolve by searching the rendered
+            // tree for the matching Host and taking its path's id.
+            // (The main tree is diffed in document order; a portal whose
+            // target appears LATER gets a fresh id below — acceptable:
+            // the target node's Create happens in the same pass and the
+            // renderer attaches children after it by index.)
+            // Attach under the FIRST host element with className == target.
+            let tparent = portal_targets
+                .get(target)
+                .and_then(|paths| paths.first())
+                .and_then(|p| {
+                    next_id_map.get(&p.split('/').map(str::to_string).collect::<Vec<_>>())
+                })
+                .copied();
+            // The portal wrapper produces no node itself; its children are
+            // keyed by position like a fragment. The OLD portal is found by
+            // path so re-renders reconcile (no duplicates).
+            let old_portal = old_tree.and_then(|t| locate_node(t, path));
+            let old_children = match old_portal {
+                Some(RenderedNode::Portal { children: oc, .. }) => Some(oc.as_slice()),
+                _ => None,
+            };
+            for (i, c) in children.iter().enumerate() {
+                let cp = child_path(path, i, c.key());
+                let old_child = old_children
+                    .and_then(|oc| oc.get(i))
+                    .filter(|o| o.key() == c.key());
+                diff_node(
+                    id_map,
+                    id_counter,
+                    old_child,
+                    c,
+                    &cp,
+                    tparent,
+                    i,
+                    patches,
+                    next_id_map,
+                    handlers,
+                    portal_targets,
+                    old_tree,
                 );
             }
         }
@@ -1161,6 +1331,8 @@ fn diff_children(
     patches: &mut Vec<Patch>,
     next_id_map: &mut HashMap<Vec<String>, NodeId>,
     handlers: &mut HashMap<NodeId, Vec<(String, Value)>>,
+    portal_targets: &std::collections::HashMap<String, Vec<String>>,
+    old_tree: Option<&RenderedNode>,
 ) {
     let old_children: Vec<&RenderedNode> = match old {
         Some(RenderedNode::Host { children, .. }) => children.iter().collect(),
@@ -1189,6 +1361,8 @@ fn diff_children(
             patches,
             next_id_map,
             handlers,
+            portal_targets,
+            old_tree,
         );
     }
 
@@ -1244,6 +1418,20 @@ fn diff_children(
     }
 }
 
+/// Follow a path (of key segments) into a rendered tree, returning the
+/// node at that path (used by portals to find their old children).
+fn locate_node<'a>(n: &'a RenderedNode, path: &[String]) -> Option<&'a RenderedNode> {
+    let mut cur = n;
+    for seg in path {
+        let children = match cur {
+            RenderedNode::Host { children, .. } | RenderedNode::Portal { children, .. } => children,
+            RenderedNode::Text { .. } => return None,
+        };
+        cur = children.iter().find(|c| c.key() == seg)?;
+    }
+    Some(cur)
+}
+
 fn remove_recursive(
     id_map: &HashMap<Vec<String>, NodeId>,
     node: &RenderedNode,
@@ -1253,11 +1441,14 @@ fn remove_recursive(
     if let Some(id) = id_map.get(path).copied() {
         patches.push(Patch::Remove { id });
     }
-    if let RenderedNode::Host { children, .. } = node {
-        for (i, c) in children.iter().enumerate() {
-            let cp = child_path(path, i, c.key());
-            remove_recursive(id_map, c, &cp, patches);
+    match node {
+        RenderedNode::Host { children, .. } | RenderedNode::Portal { children, .. } => {
+            for (i, c) in children.iter().enumerate() {
+                let cp = child_path(path, i, c.key());
+                remove_recursive(id_map, c, &cp, patches);
+            }
         }
+        RenderedNode::Text { .. } => {}
     }
 }
 
@@ -1266,6 +1457,7 @@ impl RenderedNode {
         match self {
             RenderedNode::Host { key, .. } => key,
             RenderedNode::Text { key, .. } => key,
+            RenderedNode::Portal { key, .. } => key,
         }
     }
 }
@@ -1487,5 +1679,6 @@ fn set_key(node: &mut RenderedNode, key: &str) {
     match node {
         RenderedNode::Host { key: k, .. } => *k = key.to_string(),
         RenderedNode::Text { key: k, .. } => *k = key.to_string(),
+        RenderedNode::Portal { key: k, .. } => *k = key.to_string(),
     }
 }

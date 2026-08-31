@@ -124,10 +124,10 @@ impl Renderer for MemoryRenderer {
                             props: BTreeMap::new(),
                         },
                     );
-                    self.children_of
-                        .entry(*parent)
-                        .or_default()
-                        .insert(*index, *id);
+                    let kids = self.children_of.entry(*parent).or_default();
+                    // Sparse indices (portal children target an external
+                    // parent whose child count we don't know) append.
+                    kids.insert((*index).min(kids.len()), *id);
                 }
                 Patch::CreateText {
                     id,
@@ -136,10 +136,8 @@ impl Renderer for MemoryRenderer {
                     text,
                 } => {
                     self.nodes.insert(*id, MemNode::Text { text: text.clone() });
-                    self.children_of
-                        .entry(*parent)
-                        .or_default()
-                        .insert(*index, *id);
+                    let kids = self.children_of.entry(*parent).or_default();
+                    kids.insert((*index).min(kids.len()), *id);
                 }
                 Patch::SetProp { id, name, value } => {
                     if let Some(MemNode::Element { props, .. }) = self.nodes.get_mut(id) {
@@ -158,10 +156,8 @@ impl Renderer for MemoryRenderer {
                 }
                 Patch::Move { id, parent, index } => {
                     self.detach(*id);
-                    self.children_of
-                        .entry(*parent)
-                        .or_default()
-                        .insert(*index, *id);
+                    let kids = self.children_of.entry(*parent).or_default();
+                    kids.insert((*index).min(kids.len()), *id);
                 }
             }
         }

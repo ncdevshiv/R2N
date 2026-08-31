@@ -297,7 +297,7 @@ phases:
       - id: "M1-T14"
         title: "Portals — logical parent vs rendering parent"
         priority: "P1"
-        done: false
+        done: true
       - id: "M1-T15"
         title: "Suspense — Active → Suspended → Resolved with fallback"
         priority: "P1"

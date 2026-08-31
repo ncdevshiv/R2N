@@ -420,6 +420,34 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
         return Ok(ReactNode::Fragment { key, children });
     }
 
+    // Portal: `<Portal target="class">` — a special tag, not a component.
+    if e.tag == "Portal" {
+        let mut target = String::new();
+        for p in &e.props {
+            if p.name == "target" {
+                target = match &p.value {
+                    Some(Expr::Literal(r2n_ast::lit::Literal::String(s))) => s.clone(),
+                    _ => {
+                        return Err(LowerError::NonRenderableReturn(
+                            "Portal target must be a string literal".to_string(),
+                        ))
+                    }
+                };
+            }
+        }
+        if target.is_empty() {
+            return Err(LowerError::NonRenderableReturn(
+                "Portal requires a `target` className".to_string(),
+            ));
+        }
+        let children = e
+            .children
+            .iter()
+            .map(|c| lower_child(c, index))
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(ReactNode::Portal { target, children });
+    }
+
     // Context provider: `<Ctx.Provider value={...}>` — the dotted tag names
     // the context handle's Provider member, not a component table entry.
     if let Some((base, member)) = e.tag.rsplit_once('.') {
@@ -751,6 +779,13 @@ fn subst_node(n: ReactNode, from: &str, to: &str) -> ReactNode {
                 .map(|c| subst_node(c, from, to))
                 .collect(),
         },
+        ReactNode::Portal { target, children } => ReactNode::Portal {
+            target,
+            children: children
+                .into_iter()
+                .map(|c| subst_node(c, from, to))
+                .collect(),
+        },
         ReactNode::Text(e) => ReactNode::Text(subst_expr(e, from, to)),
         ReactNode::Children => ReactNode::Children,
         ReactNode::Fragment { key, children } => ReactNode::Fragment {
@@ -866,6 +901,11 @@ fn collect_free_node(
         } => {
             collect_free(ctx, bound, out);
             collect_free(value, bound, out);
+            for c in children {
+                collect_free_node(c, bound, out);
+            }
+        }
+        ReactNode::Portal { children, .. } => {
             for c in children {
                 collect_free_node(c, bound, out);
             }
