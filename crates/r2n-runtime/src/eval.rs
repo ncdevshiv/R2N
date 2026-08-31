@@ -17,9 +17,13 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The evaluation environment: a chain of named binding frames.
+/// Frames are SHARED (`Rc<RefCell<...>>`): a closure captures its lexical
+/// environment by cloning the `Env` (the frame vector), so later writes to
+/// captured names are visible to the closure — JS lexical capture
+/// semantics, not a snapshot.
 #[derive(Debug, Clone, Default)]
 pub struct Env {
-    frames: Vec<BTreeMap<String, Value>>,
+    frames: Vec<std::rc::Rc<std::cell::RefCell<BTreeMap<String, Value>>>>,
     /// Shared render-pass context stack: providers push, useContext reads
     /// the nearest value for a context id. Cloned envs share the stack
     /// (Rc<RefCell>) because context is scoped by TREE POSITION, not by
@@ -32,7 +36,7 @@ impl Env {
         // Start with one top-level scope so `define` always has somewhere to
         // write. `push_scope`/`pop_scope` add/remove nested scopes.
         Self {
-            frames: vec![BTreeMap::new()],
+            frames: vec![std::rc::Rc::new(std::cell::RefCell::new(BTreeMap::new()))],
             ctx: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
         }
     }
@@ -46,28 +50,34 @@ impl Env {
     /// children of a provider must see the provider's values.
     pub fn child_of(parent: &Env) -> Self {
         Self {
-            frames: vec![BTreeMap::new()],
+            frames: vec![std::rc::Rc::new(std::cell::RefCell::new(BTreeMap::new()))],
             ctx: parent.ctx.clone(),
         }
     }
     pub fn push_scope(&mut self) {
-        self.frames.push(BTreeMap::new());
+        self.frames
+            .push(std::rc::Rc::new(std::cell::RefCell::new(BTreeMap::new())));
     }
     pub fn pop_scope(&mut self) {
         self.frames.pop();
     }
     pub fn define(&mut self, name: &str, value: Value) {
-        if let Some(top) = self.frames.last_mut() {
-            top.insert(name.to_string(), value);
+        if let Some(top) = self.frames.last() {
+            top.borrow_mut().insert(name.to_string(), value);
         }
     }
     pub fn get(&self, name: &str) -> Result<Value, RuntimeError> {
         for frame in self.frames.iter().rev() {
-            if let Some(v) = frame.get(name) {
+            if let Some(v) = frame.borrow().get(name) {
                 return Ok(v.clone());
             }
         }
         Err(RuntimeError::new(format!("unbound variable '{name}'")))
+    }
+
+    /// The shared frame vector (the lexical environment reference).
+    pub fn frames(&self) -> &[std::rc::Rc<std::cell::RefCell<BTreeMap<String, Value>>>] {
+        &self.frames
     }
 }
 
@@ -182,13 +192,13 @@ pub fn eval(
             }
         }
         JsExpr::Closure { params, body, .. } => {
-            // First-class function value: params + body, invoked against the
-            // caller's env (lexical capture arrives with M2-T03). Handlers
-            // and map/filter args are consumed before this arm by their
-            // dedicated paths.
+            // First-class function value with LEXICAL capture: the closure
+            // holds the env it was evaluated in (shared frames — later
+            // writes to captured names are visible).
             Ok(Value::Function {
                 params: params.clone(),
                 body: body.clone(),
+                captured: env.clone(),
             })
         }
         JsExpr::Call { callee, args } => {
@@ -545,11 +555,15 @@ fn call_value(
             // Event dispatch still exists for the ABI's on* path.
             eval(body, env, frame, host, components, effects)
         }
-        Value::Function { params, body } => {
-            // First-class function call: bind params to args, evaluate the
-            // body in a child of the caller's env (lexical capture arrives
-            // with M2-T03).
-            let mut fenv = Env::child_of(env);
+        Value::Function {
+            params,
+            body,
+            captured,
+        } => {
+            // Call against the CAPTURED lexical env (params in a child
+            // scope; shared-frame writes in the captured scope are seen).
+            let mut fenv = captured.clone();
+            fenv.push_scope();
             for (i, p) in params.iter().enumerate() {
                 fenv.define(p, args.get(i).cloned().unwrap_or(Value::Undefined));
             }
