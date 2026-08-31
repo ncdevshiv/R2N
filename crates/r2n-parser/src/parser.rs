@@ -626,6 +626,14 @@ impl<'a> Parser<'a> {
                     Ok(e)
                 }
             }
+            TokenKind::Ident(name) if name == "throw" => {
+                // `throw value` — an expression form; the value raises to the
+                // nearest enclosing try (eval turns it into a thrown Value).
+                self.advance()?;
+                let value = self.parse_expr()?;
+                Ok(Expr::Throw(Box::new(value)))
+            }
+            TokenKind::Ident(name) if name == "try" => self.parse_try(),
             TokenKind::Ident(name) if name == "if" => {
                 // `if cond { then } else { else }` -> ternary.
                 self.advance()?;
@@ -739,6 +747,76 @@ impl<'a> Parser<'a> {
         } else {
             self.parse_expr()
         }
+    }
+
+    /// Parse `{ stmts }` as a list of statement-level expressions (the shared
+    /// body shape of try/catch/finally blocks); consumes both braces.
+    fn parse_block_stmts(&mut self) -> Result<Vec<Expr>, ParseError> {
+        self.expect(TokenKind::LeftBrace)?;
+        let mut stmts = Vec::new();
+        while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
+            if matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "return") {
+                self.advance()?;
+                stmts.push(self.parse_expr()?);
+                if self.check(&TokenKind::Semicolon) {
+                    self.advance()?;
+                }
+                break;
+            }
+            if matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "let" || kw == "const") {
+                self.advance()?;
+                let name = self.expect_ident()?;
+                self.expect(TokenKind::Equals)?;
+                let value = self.parse_expr()?;
+                if self.check(&TokenKind::Semicolon) {
+                    self.advance()?;
+                }
+                stmts.push(Expr::Assign {
+                    target: Box::new(Expr::Ident {
+                        name,
+                        is_component: false,
+                    }),
+                    value: Box::new(value),
+                });
+                continue;
+            }
+            stmts.push(self.parse_expr()?);
+            if self.check(&TokenKind::Semicolon) {
+                self.advance()?;
+            }
+        }
+        self.expect(TokenKind::RightBrace)?;
+        Ok(stmts)
+    }
+
+    /// `try { } catch (e) { } finally { }` — catch and finally are both
+    /// optional but at least one must be present (ECMA grammar).
+    fn parse_try(&mut self) -> Result<Expr, ParseError> {
+        self.advance()?; // `try`
+        let block = self.parse_block_stmts()?;
+        let (mut catch_param, mut catch, mut finally) = (None, None, None);
+        if matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "catch") {
+            self.advance()?;
+            if self.check(&TokenKind::LeftParen) {
+                self.advance()?;
+                catch_param = Some(self.expect_ident()?);
+                self.expect(TokenKind::RightParen)?;
+            }
+            catch = Some(self.parse_block_stmts()?);
+        }
+        if matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "finally") {
+            self.advance()?;
+            finally = Some(self.parse_block_stmts()?);
+        }
+        if catch.is_none() && finally.is_none() {
+            return Err(self.err("try requires a catch or finally block"));
+        }
+        Ok(Expr::Try {
+            block,
+            catch_param,
+            catch,
+            finally,
+        })
     }
 
     fn parse_array(&mut self) -> Result<Expr, ParseError> {

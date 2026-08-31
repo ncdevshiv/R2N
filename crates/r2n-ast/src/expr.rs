@@ -49,6 +49,17 @@ pub enum Expr {
     /// A block of expression statements, evaluated in order; the block's value
     /// is its last expression. Produced for block-bodied arrows.
     Block(Vec<Expr>),
+    /// `throw value` — raises `value` to the nearest enclosing `try`.
+    Throw(Box<Expr>),
+    /// `try { block } catch (param) { catch } finally { finally }` — at least
+    /// one of catch/finally is present (ECMA grammar). Block bodies hold
+    /// statement-level expressions (lets arrive pre-lowered as Assigns).
+    Try {
+        block: Vec<Expr>,
+        catch_param: Option<String>,
+        catch: Option<Vec<Expr>>,
+        finally: Option<Vec<Expr>>,
+    },
 }
 
 impl fmt::Display for Expr {
@@ -101,6 +112,24 @@ impl fmt::Display for Expr {
                     write!(f, "{s}; ")?;
                 }
                 write!(f, "}}")
+            }
+            Expr::Throw(v) => write!(f, "throw {v}"),
+            Expr::Try {
+                block,
+                catch_param,
+                catch,
+                finally,
+            } => {
+                write!(f, "try {{ {block:?} }} ")?;
+                if let Some(p) = catch_param {
+                    write!(f, "catch ({p}) {{ {catch:?} }} ")?;
+                } else if let Some(c) = catch {
+                    write!(f, "catch {{ {c:?} }} ")?;
+                }
+                if let Some(fl) = finally {
+                    write!(f, "finally {{ {fl:?} }}")?;
+                }
+                Ok(())
             }
         }
     }

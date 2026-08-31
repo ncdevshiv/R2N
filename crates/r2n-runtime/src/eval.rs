@@ -66,6 +66,22 @@ impl Env {
             top.borrow_mut().insert(name.to_string(), value);
         }
     }
+
+    /// JS ASSIGNMENT semantics: update the NEAREST existing binding of
+    /// `name`, walking outer scopes; only define into the current scope when
+    /// no frame binds it (sloppy-mode implicit binding). `define` stays for
+    /// declarations (let/const lowering, catch params, component bindings) —
+    /// an assignment inside a nested scope (`catch`, arrow block) must reach
+    /// the outer binding, not shadow it.
+    pub fn assign(&mut self, name: &str, value: Value) {
+        for frame in self.frames.iter().rev() {
+            if frame.borrow().contains_key(name) {
+                frame.borrow_mut().insert(name.to_string(), value);
+                return;
+            }
+        }
+        self.define(name, value);
+    }
     pub fn get(&self, name: &str) -> Result<Value, RuntimeError> {
         for frame in self.frames.iter().rev() {
             if let Some(v) = frame.borrow().get(name) {
@@ -133,6 +149,18 @@ pub fn eval(
                     )))
                 }
             };
+            if name == "Error" {
+                // `new Error(msg)` — same object as a plain Error(msg) call.
+                let msg = if let Some(JsExpr::Lit(r2n_ir::value::Literal::String(s))) = args.first()
+                {
+                    Value::from_str_utf8(s)
+                } else if let Some(a) = args.first() {
+                    eval(a, env, frame, host, components, effects)?
+                } else {
+                    Value::Undefined
+                };
+                return Ok(make_error_value(msg));
+            }
             let class_info = components
                 .iter()
                 .find(|c| c.name == name)
@@ -179,9 +207,10 @@ pub fn eval(
         JsExpr::Assign { target, value } => {
             let v = eval(value, env, frame, host, components, effects)?;
             match &**target {
-                // `x = v` updates the current scope binding.
+                // `x = v` updates the nearest existing binding (JS
+                // assignment — outer scopes are reached, not shadowed).
                 JsExpr::Var(name) => {
-                    env.define(name, v.clone());
+                    env.assign(name, v.clone());
                     Ok(v)
                 }
                 JsExpr::Get { base, prop } => {
@@ -243,6 +272,45 @@ pub fn eval(
                 last = eval(s, env, frame, host, components, effects)?;
             }
             Ok(last)
+        }
+        JsExpr::Throw { value } => {
+            let v = eval(value, env, frame, host, components, effects)?;
+            Err(RuntimeError::thrown(v))
+        }
+        JsExpr::Try {
+            block,
+            catch_param,
+            catch,
+            finally,
+        } => {
+            let try_block = JsExpr::Block(block.clone());
+            let mut outcome = eval(&try_block, env, frame, host, components, effects);
+            if outcome.is_err() {
+                if let Some(cb) = catch {
+                    let caught = outcome.err().unwrap().caught_value();
+                    // The catch param binds in a fresh scope (ECMA catch
+                    // block scoping); outer reads/writes still work.
+                    env.push_scope();
+                    if let Some(p) = catch_param {
+                        env.define(p, caught);
+                    }
+                    let catch_block = JsExpr::Block(cb.clone());
+                    outcome = eval(&catch_block, env, frame, host, components, effects);
+                    env.pop_scope();
+                }
+            }
+            // Finally runs on EVERY path; an error raised in it replaces the
+            // pending outcome (ECMA completion semantics — the expression IR
+            // has no return-completion, so no return-override case exists).
+            if let Some(fb) = finally {
+                let finally_block = JsExpr::Block(fb.clone());
+                match eval(&finally_block, env, frame, host, components, effects) {
+                    Ok(_) => outcome,
+                    Err(fe) => Err(fe),
+                }
+            } else {
+                outcome
+            }
         }
         JsExpr::If { cond, then, else_ } => {
             if eval(cond, env, frame, host, components, effects)?.is_truthy() {
@@ -988,6 +1056,16 @@ fn call_var(
                 crate::value::ObjData::new(),
             ))))
         }
+        "Error" => {
+            // Error(message) — an Error-shaped object ({name, message}); the
+            // form real code throws (`throw new Error("x")`).
+            let msg = if let Some(a) = args.first() {
+                eval(a, env, frame, host, components, effects)?
+            } else {
+                Value::Undefined
+            };
+            Ok(make_error_value(msg))
+        }
         "typeof" => {
             let v = if let Some(a) = args.first() {
                 eval(a, env, frame, host, components, effects)?
@@ -1209,6 +1287,16 @@ pub fn cleanup_of(
 
 /// Symbol identity source: fresh ids; `Symbol.for(key)` symbols share id
 /// by key (registered symbols).
+/// An Error-shaped object: `{name: "Error", message}`. `throw new Error(m)`
+/// produces one; catches read `e.message`, and the boundary/error path uses
+/// the message as the error text.
+fn make_error_value(msg: Value) -> Value {
+    let mut data = crate::value::ObjData::new();
+    data.set_own("name".to_string(), Value::from_str_utf8("Error"));
+    data.set_own("message".to_string(), msg);
+    Value::Object(std::rc::Rc::new(std::cell::RefCell::new(data)))
+}
+
 fn new_symbol(key: Option<String>) -> Symbol {
     use std::sync::atomic::{AtomicU64, Ordering as O};
     static NEXT: AtomicU64 = AtomicU64::new(1);

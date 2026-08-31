@@ -482,6 +482,37 @@ fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, Low
                 .map(|a| lower_expr(a, index))
                 .collect::<Result<Vec<_>, _>>()?,
         },
+        Expr::Throw(value) => JsExpr::Throw {
+            value: Box::new(lower_expr(value, index)?),
+        },
+        Expr::Try {
+            block,
+            catch_param,
+            catch,
+            finally,
+        } => JsExpr::Try {
+            block: block
+                .iter()
+                .map(|s| lower_expr(s, index))
+                .collect::<Result<_, _>>()?,
+            catch_param: catch_param.clone(),
+            catch: catch
+                .as_ref()
+                .map(|c| {
+                    c.iter()
+                        .map(|s| lower_expr(s, index))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
+            finally: finally
+                .as_ref()
+                .map(|f| {
+                    f.iter()
+                        .map(|s| lower_expr(s, index))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
+        },
         Expr::Element(_) => {
             return Err(LowerError::InvalidListMap(
                 "element used as a value".to_string(),
@@ -906,6 +937,31 @@ fn subst_expr(e: JsExpr, from: &str, to: &str) -> JsExpr {
             then: Box::new(subst_expr(*then, from, to)),
             else_: Box::new(subst_expr(*else_, from, to)),
         },
+        JsExpr::Throw { value } => JsExpr::Throw {
+            value: Box::new(subst_expr(*value, from, to)),
+        },
+        JsExpr::Try {
+            block,
+            catch_param,
+            catch,
+            finally,
+        } => {
+            // A catch param named `from` shadows the substitution inside the
+            // catch body (ECMA scoping) — decide before `catch_param` moves.
+            let shadows = catch_param.as_deref() == Some(from);
+            JsExpr::Try {
+                block: block.into_iter().map(|s| subst_expr(s, from, to)).collect(),
+                // A catch param named `from` shadows the substitution inside
+                // the catch body (ECMA scoping).
+                catch_param,
+                catch: if shadows {
+                    catch
+                } else {
+                    catch.map(|c| c.into_iter().map(|s| subst_expr(s, from, to)).collect())
+                },
+                finally: finally.map(|f| f.into_iter().map(|s| subst_expr(s, from, to)).collect()),
+            }
+        }
         JsExpr::Builtin(b) => JsExpr::Builtin(b),
         JsExpr::Children(nodes) => {
             JsExpr::Children(nodes.into_iter().map(|n| subst_node(n, from, to)).collect())
@@ -1058,6 +1114,32 @@ fn collect_free(e: &JsExpr, bound: &std::collections::HashSet<String>, out: &mut
             collect_free(cond, bound, out);
             collect_free(then, bound, out);
             collect_free(else_, bound, out);
+        }
+        JsExpr::Throw { value } => collect_free(value, bound, out),
+        JsExpr::Try {
+            block,
+            catch_param,
+            catch,
+            finally,
+        } => {
+            for s in block {
+                collect_free(s, bound, out);
+            }
+            if let Some(c) = catch {
+                // The catch param is a binding: it shadows outer names.
+                let mut inner = bound.clone();
+                if let Some(p) = catch_param {
+                    inner.insert(p.clone());
+                }
+                for s in c {
+                    collect_free(s, &inner, out);
+                }
+            }
+            if let Some(f) = finally {
+                for s in f {
+                    collect_free(s, bound, out);
+                }
+            }
         }
     }
 }
