@@ -541,6 +541,17 @@ fn call_var(
                 .map(|(_, v)| v.clone());
             Ok(found.unwrap_or(*default))
         }
+        "useResource" => {
+            // (value, resolve): reads Value::Pending until resolve() is
+            // called — a real, state-driven source for Suspense.
+            let key = if let Some(a) = args.first() {
+                eval(a, env, frame, host, components, effects)?
+            } else {
+                Value::Null
+            };
+            let (p, r) = frame.use_pending(key);
+            Ok(Value::Array(vec![p, r]))
+        }
         "useId" => {
             if frame.path().is_none() {
                 return Err(RuntimeError::new("useId outside a component"));

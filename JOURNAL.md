@@ -892,3 +892,40 @@ assumptions.
 **CHOSE**
 Pre-assigned ids + old-node location. 4 tests; suite 145; records updated
 (M1 14/18, 50/106).
+
+## 2026-08-30 — Entry 20: M1-T15 Suspense
+
+**PLAN**
+The Active → Suspended → Resolved lifecycle with a fallback. The engine
+is synchronous (no promises), so the honest suspension source is a real
+state machine: `useResource(key)` returns (`Value::Pending`, resolver);
+reading Pending suspends; `<Suspense fallback>` shows the fallback;
+resolving flips state and re-renders content.
+
+**WHAT**
+- `Value::Pending` sentinel; `use_pending` hook (slot-stored; returns the
+  STORED value — the first cut always returned Pending, so resolve never
+  changed anything; the smoke caught it).
+- `ReactNode::Suspense { fallback, children }` from `<Suspense fallback>`.
+- Text arm: a Pending read yields `RenderedNode::Suspended`.
+- Suspense arm: scans RECURSIVELY (`contains_suspended`) — the Pending
+  text sits inside a host child, so the first cut's direct-children check
+  missed it; the whole subtree swaps for the fallback.
+- Resolve → single SetProp+SetText, zero Remove/Create (the swap is a
+  branch, not a tree rewrite); resolved state sticks across unrelated
+  re-renders; per-instance boundaries independent.
+
+**WHY**
+Suspense is the loading-state primitive; without it every async UI
+hand-rolls the phase machine. Our subset has no promises, so the pending
+source is a state slot — real (state-driven, dirty→flush), not a fake
+timer.
+
+**OPTIONS**
+- Real promises/throw-based suspension (M2's async work): rejected now —
+  the mechanism (fallback swap, resolution, minimal patches) is the M1-T15
+  deliverable and is proven independent of the async source.
+
+**CHOSE**
+State-driven pending source + recursive marker scan. 4 tests; suite 149;
+records updated (M1 15/18, 51/106).

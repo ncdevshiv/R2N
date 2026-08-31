@@ -1,7 +1,7 @@
 # R2N — Complete Execution Checklist
 
 > **R2N — React to Native** — Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime
-> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **50/106** tasks done (47%).
+> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **51/106** tasks done (48%).
 > Audit basis: every task was verified against the actual implementation and test suite (54 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
 
 **How to use:** check items off in the interactive tracker ([index.html](index.html)) — it saves live in your browser. This file, [roadmap.yaml](roadmap.yaml), and [roadmap.toml](roadmap.toml) are the portable record; update them when a milestone closes.
@@ -69,7 +69,7 @@ _Stop hand-building IR. Lexer → parser → AST → JS IR → React IR, and the
 
 ## M1 — React Compatibility — Level 1
 
-`IN PROGRESS` · weeks 7–12 · progress **14/18** (78%)
+`IN PROGRESS` · weeks 7–12 · progress **15/18** (83%)
 
 _Behavioral compatibility with React core: full hook set, keys, context, effects, class components, error boundaries, portals, Suspense — validated by a behavioral conformance suite, not API presence._
 
@@ -87,7 +87,7 @@ _Behavioral compatibility with React core: full hook set, keys, context, effects
 - [x] **P1** — Class components — state, props, lifecycle methods: `class X extends Component { state = ...; render() {...} }` (parser both twinned; AST Decl::Class; lowering via ClassInfo/ClassMethod — render body becomes the component body, other methods IR blocks); `this` = Map{state, setState (a Setter on the state slot), methods (callable Handler values — call_value now invokes handler values in the current env, enabling this.method()); setState applies + dirty → minimal SetText (verified); shared `setup_class_env` used by BOTH component arm and render_root (a class can be the root — caught by the smoke test); lifecycle: componentDidMount once, componentDidUpdate on re-render, componentWillUnmount armed as an effect cleanup fired once at unmount (tests/class_components.rs, 5 tests)
 - [x] **P0** — Error boundaries — capture, fallback, recovery: the component body render is wrapped (Err arm); a class with `getDerivedStateFromError`/`componentDidCatch` captures subtree render errors — derives new state (bound to `err` param, applied via the useState setter to the state slot), runs the catch hook (log-observable), RESETS the frame's hook cursor (`begin_render` same-pass — the mid-pass re-render would otherwise read the willUnmount effect slot as state and re-init to 0 — a real bug the tests caught), rebuilds the class env, re-renders the body (fallback). No boundary → error propagates. `RuntimeError::error_text()` added for the hook's `err` arg (tests/error_boundaries.rs, 4 tests)
 - [x] **P1** — Portals — logical parent vs rendering parent: `<Portal target="className">` (special tag in lowering); children render under the FIRST host element with that className — a different RENDERING parent; reconciliation identity and keys follow the LOGICAL position (old portal located by path + key so re-renders reconcile — the naive old=None duplicated content, caught by tests); missing-target renders children at the logical position (no crash); renderer clamps sparse patch indices (portal creates target an external parent whose child count is unknown) (tests/portals.rs, 4 tests)
-- [ ] **P1** — Suspense — Active → Suspended → Resolved with fallback
+- [x] **P1** — Suspense — Active → Suspended → Resolved with fallback: `<Suspense fallback={...}>` special tag (IR `ReactNode::Suspense`); `useResource(key)` = a real pending source (`Value::Pending` + resolver Setter; the stored value is read on re-render — first cut always returned Pending, caught by the resolve smoke); the Text arm converts a Pending read into a `RenderedNode::Suspended` marker; the Suspense arm scans RECURSIVELY (a Pending text inside a host child — deep suspension) and swaps the whole subtree for the fallback; resolve → single SetProp+SetText (no duplicate trees, zero Remove/Create — test-verified); resolved state sticks across unrelated re-renders; per-instance boundaries independent (tests/suspense.rs, 4 tests)
 - [ ] **P1** — StrictMode dev-only semantics kept out of production artifacts
 - [ ] **P0** — Conformance suite v1 — behavioral tests (observable behavior, not API presence)
 - [ ] **P2** — react_compatibility_version recorded per artifact

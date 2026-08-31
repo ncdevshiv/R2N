@@ -141,6 +141,8 @@ fn lower_component(
             | ReactNode::List { .. }
             | ReactNode::Fragment { .. }
             | ReactNode::ContextProvider { .. }
+            | ReactNode::Portal { .. }
+            | ReactNode::Suspense { .. }
     ) {
         return Err(LowerError::NonRenderableReturn(format!(
             "component {} returns a non-renderable expression",
@@ -418,6 +420,36 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
             children.push(lower_child(child, index)?);
         }
         return Ok(ReactNode::Fragment { key, children });
+    }
+
+    // Suspense: `<Suspense fallback={...}>` — a special tag, not a
+    // component. `fallback` must be a renderable element.
+    if e.tag == "Suspense" {
+        let mut fallback = None;
+        for p in &e.props {
+            if p.name == "fallback" {
+                match &p.value {
+                    Some(v) => fallback = Some(Box::new(lower_renderable(v, index)?)),
+                    None => {
+                        return Err(LowerError::NonRenderableReturn(
+                            "Suspense fallback must be an element".to_string(),
+                        ))
+                    }
+                }
+            }
+        }
+        let fb = fallback.ok_or_else(|| {
+            LowerError::NonRenderableReturn("Suspense requires fallback".to_string())
+        })?;
+        let children = e
+            .children
+            .iter()
+            .map(|c| lower_child(c, index))
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(ReactNode::Suspense {
+            fallback: fb,
+            children,
+        });
     }
 
     // Portal: `<Portal target="class">` — a special tag, not a component.
@@ -779,6 +811,13 @@ fn subst_node(n: ReactNode, from: &str, to: &str) -> ReactNode {
                 .map(|c| subst_node(c, from, to))
                 .collect(),
         },
+        ReactNode::Suspense { fallback, children } => ReactNode::Suspense {
+            fallback: Box::new(subst_node(*fallback, from, to)),
+            children: children
+                .into_iter()
+                .map(|c| subst_node(c, from, to))
+                .collect(),
+        },
         ReactNode::Portal { target, children } => ReactNode::Portal {
             target,
             children: children
@@ -901,6 +940,12 @@ fn collect_free_node(
         } => {
             collect_free(ctx, bound, out);
             collect_free(value, bound, out);
+            for c in children {
+                collect_free_node(c, bound, out);
+            }
+        }
+        ReactNode::Suspense { fallback, children } => {
+            collect_free_node(fallback, bound, out);
             for c in children {
                 collect_free_node(c, bound, out);
             }

@@ -428,7 +428,7 @@ done = true
 id = "M1-T15"
 title = "Suspense — Active → Suspended → Resolved with fallback"
 priority = "P1"
-done = false
+done = true
 
 [[phases.tasks]]
 id = "M1-T16"
