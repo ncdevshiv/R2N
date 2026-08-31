@@ -10,11 +10,50 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+/// An ECMAScript symbol: identity by id; `Symbol.for(key)` symbols share
+/// the id of their key (registered). Empty `key` = anonymous.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbol {
+    pub id: u64,
+    /// The `Symbol.for` key, if registered.
+    pub key: Option<String>,
+}
+
+impl Symbol {
+    pub fn display(&self) -> String {
+        match &self.key {
+            Some(k) => format!("Symbol({k})"),
+            None => format!("Symbol({})", self.id),
+        }
+    }
+}
+
 /// A runtime value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    /// ECMAScript `undefined` (`typeof undefined`).
+    Undefined,
     Null,
     Bool(bool),
+    /// ECMAScript BigInt. i64 suffices for the supported subset; the boxed
+    /// semantics (arbitrary precision) arrive with the full value model
+    /// tests (M2-T01 documents the bounded representation).
+    BigInt(i64),
+    /// ECMAScript Symbol: identity is the runtime-unique id (same-name
+    /// symbols are distinct, like `Symbol()`); registered symbols via
+    /// `Symbol.for` share by key.
+    Symbol(Symbol),
+    /// General JS object: dynamic string-keyed properties (prototype
+    /// semantics arrive with M2-T02).
+    Object(std::rc::Rc<std::cell::RefCell<BTreeMap<String, Value>>>),
+    /// A first-class function value: params + body (a `JsExpr`) invoked
+    /// against the caller's env; lexical capture arrives with M2-T03.
+    Function {
+        params: Vec<String>,
+        body: Box<r2n_ir::js::JsExpr>,
+    },
+    /// An opaque external handle (host resource; renderer-bound objects).
+    External(u64),
     /// Numbers are always f64 (ECMAScript `Number`). Integers up to 2^53 are
     /// representable exactly; we keep f64 for simplicity and ECMA semantics.
     Number(f64),
@@ -102,13 +141,20 @@ impl Value {
     }
 
     pub fn as_bool(&self) -> bool {
+        // ECMA-262 ToBoolean: falsy = undefined, null, false, ±0, NaN, ""
+        // and BigInt 0n.
         match self {
-            Value::Null => false,
+            Value::Undefined | Value::Null => false,
             Value::Bool(b) => *b,
             Value::Number(n) => *n != 0.0 && !n.is_nan(),
+            Value::BigInt(n) => *n != 0,
             Value::Str(s) => !s.is_empty(),
             Value::Array(a) => !a.is_empty(),
             Value::Map(m) => !m.is_empty(),
+            Value::Object(_) => true,
+            Value::Function { .. } => true,
+            Value::Symbol(_) => true,
+            Value::External(_) => true,
             Value::Handler { .. } => true,
             Value::Setter(_) => true,
             Value::Dispatcher { .. } => true,
@@ -126,11 +172,17 @@ impl Value {
 
     /// A stable display of the value, used by tests and the debug renderer.
     pub fn display(&self) -> String {
+        // ECMA-262 ToString for the supported types (BigInt/Symbol are
+        // rendered distinctly; object/functions/externals use placeholders,
+        // their own ToString behavior arrives with the type tasks).
         match self {
+            Value::Undefined => "undefined".to_string(),
             Value::Null => "null".to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Number(n) => format_number(*n),
+            Value::BigInt(n) => format!("{n}n"),
             Value::Str(u) => String::from_utf16_lossy(u),
+            Value::Symbol(s) => s.display(),
             Value::Array(items) => {
                 let parts: Vec<String> = items.iter().map(|i| i.display()).collect();
                 format!("[{}]", parts.join(", "))
@@ -142,6 +194,9 @@ impl Value {
                     .collect();
                 format!("{{{}}}", parts.join(", "))
             }
+            Value::Object(_) => "[object Object]".to_string(),
+            Value::Function { .. } => "[function]".to_string(),
+            Value::External(_) => "[external]".to_string(),
             Value::Handler { .. } => "<handler>".to_string(),
             Value::Setter(s) => format!("<setter#{}>", s.frame_index),
             Value::Dispatcher { slot } => format!("<dispatch#{slot}>"),

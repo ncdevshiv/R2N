@@ -99,7 +99,7 @@ Conformance suite end-state: `React Compatibility: 99.x% · JavaScript: 99.x% ·
 | M0.2 | Reactive Runtime Loop | 2–4 | 14 | **DONE** (14/14) |
 | M0.3 | Compiler Frontend — JS/JSX → IR | 4–7 | 9 | **DONE** (9/9) |
 | M1 | React Compatibility — Level 1 | 7–12 | 18 | **DONE** (18/18) |
-| M2 | JavaScript Compatibility — Level 2 | 12–20 | 15 | planned |
+| M2 | JavaScript Compatibility — Level 2 | 12–20 | 15 | in progress (1/15) |
 | M3 | Optimization Pipeline — Specialization | 20–26 | 10 | planned |
 | M4 | Renderers — Native, WASM, Terminal | 26–32 | 5 | planned |
 | M5 | Multi-Runtime — Go & Elixir | 32–38 | 6 | planned |

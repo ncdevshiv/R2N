@@ -19,6 +19,8 @@ pub enum Literal {
     Bool(bool),
     /// The `null` literal.
     Null,
+    /// The `undefined` keyword.
+    Undefined,
 }
 
 impl fmt::Display for Literal {
@@ -29,6 +31,7 @@ impl fmt::Display for Literal {
             Literal::String(s) => write!(f, "{:?}", s),
             Literal::Bool(b) => write!(f, "{b}"),
             Literal::Null => write!(f, "null"),
+            Literal::Undefined => write!(f, "undefined"),
         }
     }
 }

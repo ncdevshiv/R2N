@@ -451,7 +451,7 @@ done = true
 [[phases]]
 id = "M2"
 name = "JavaScript Compatibility — Level 2"
-status = "planned"
+status = "in-progress"
 start_week = 12
 end_week = 20
 color = "#fbbf24"
@@ -461,7 +461,7 @@ blurb = "Full ECMAScript semantics in the compatibility engine: closures, classe
 id = "M2-T01"
 title = "Full value model: Undefined/Null/Boolean/Number/BigInt/String/Symbol/Object/Function/External"
 priority = "P0"
-done = false
+done = true
 
 [[phases.tasks]]
 id = "M2-T02"

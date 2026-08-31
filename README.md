@@ -26,9 +26,10 @@ source (.r2n)  →  Lexer  →  Parser (AST)  →  Lowering  →  JS IR ─┐
 | M0.2 Reactive runtime loop | **DONE** | 14/14 |
 | M0.3 Compiler frontend (JS/JSX → IR) | **DONE** | 9/9 |
 | M1 React compatibility — hooks, keys, context, effects | **DONE** | 18/18 |
-| M2–M7 | planned | — |
+| M2 JavaScript compatibility — full ECMAScript semantics | in progress | 1/15 |
+| M3–M7 | planned | — |
 
-**Overall: 54/106 roadmap tasks.** Every claim above is backed by the test suite (`cargo test`) and the architecture-guard tests. See [roadmap/CHECKLIST.md](roadmap/CHECKLIST.md) for the task-level record, [JOURNAL.md](JOURNAL.md) for decision history, and [docs/AUDIT.md](docs/AUDIT.md) for the latest audit report.
+**Overall: 55/106 roadmap tasks.** Every claim above is backed by the test suite (`cargo test`) and the architecture-guard tests. See [roadmap/CHECKLIST.md](roadmap/CHECKLIST.md) for the task-level record, [JOURNAL.md](JOURNAL.md) for decision history, and [docs/AUDIT.md](docs/AUDIT.md) for the latest audit report.
 
 ### What works today (all test-verified)
 
@@ -40,7 +41,7 @@ source (.r2n)  →  Lexer  →  Parser (AST)  →  Lowering  →  JS IR ─┐
 
 ### What is deliberately not done yet
 
-Everything in M1–M7: the full React hook set and behavioral conformance suite, full ECMAScript semantics, the specialization/optimization pipeline, non-memory renderers (native/WASM/terminal), the Go/Elixir runtimes, npm/browser-API compatibility, and productionization. The [issues board](https://github.com/ncdevshiv/R2N/issues) tracks all of it; nothing is claimed that isn't tested.
+Everything in M2–M7: the remainder of full ECMAScript semantics (objects/prototypes, closures, classes, coercion, exceptions, promises, generators, modules), the specialization/optimization pipeline, non-memory renderers (native/WASM/terminal), the Go/Elixir runtimes, npm/browser-API compatibility, and productionization. The [issues board](https://github.com/ncdevshiv/R2N/issues) tracks all of it; nothing is claimed that isn't tested.
 
 ## Architecture rules (enforced by CI, not by convention)
 
@@ -53,7 +54,7 @@ Everything in M1–M7: the full React hook set and behavioral conformance suite,
 
 ```bash
 cargo build --workspace
-cargo test --workspace          # 163 tests incl. architecture + acceptance guards
+cargo test --workspace          # 170 tests incl. architecture + acceptance guards
 cargo clippy --workspace --all-targets -- -D warnings
 scripts/verify-audit-claims.sh  # re-derives every README/roadmap claim from source
 ```

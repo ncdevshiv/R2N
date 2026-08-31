@@ -317,7 +317,7 @@ phases:
 
   - id: "M2"
     name: "JavaScript Compatibility — Level 2"
-    status: "planned"   # spec = design complete in the R2N architecture sessions; planned = not started
+    status: "in-progress"   # full value model done (M2-T01); objects/closures/classes/coercion remain
     window: { start_week: 12, end_week: 20 }
     color: "#fbbf24"
     blurb: "Full ECMAScript semantics in the compatibility engine: closures, classes, prototypes, coercion, exceptions, promises, generators, modules — the layer that makes arbitrary React code actually run."
@@ -325,7 +325,7 @@ phases:
       - id: "M2-T01"
         title: "Full value model: Undefined/Null/Boolean/Number/BigInt/String/Symbol/Object/Function/External"
         priority: "P0"
-        done: false
+        done: true
       - id: "M2-T02"
         title: "Objects — dynamic properties, prototypes, shape-friendly layout"
         priority: "P0"

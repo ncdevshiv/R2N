@@ -1,7 +1,7 @@
 # R2N — Complete Execution Checklist
 
 > **R2N — React to Native** — Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime
-> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **54/106** tasks done (51%).
+> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **55/106** tasks done (52%).
 > Audit basis: every task was verified against the actual implementation and test suite (54 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
 
 **How to use:** check items off in the interactive tracker ([index.html](index.html)) — it saves live in your browser. This file, [roadmap.yaml](roadmap.yaml), and [roadmap.toml](roadmap.toml) are the portable record; update them when a milestone closes.
@@ -94,11 +94,11 @@ _Behavioral compatibility with React core: full hook set, keys, context, effects
 
 ## M2 — JavaScript Compatibility — Level 2
 
-`PLANNED` · weeks 12–20 · progress **0/15** (0%)
+`IN PROGRESS` · weeks 12–20 · progress **1/15** (7%)
 
 _Full ECMAScript semantics in the compatibility engine: closures, classes, prototypes, coercion, exceptions, promises, generators, modules — the layer that makes arbitrary React code actually run._
 
-- [ ] **P0** — Full value model: Undefined/Null/Boolean/Number/BigInt/String/Symbol/Object/Function/External
+- [x] **P0** — Full value model: Undefined/Null/Boolean/Number/BigInt/String/Symbol/Object/Function/External: `Value` gains Undefined (keyword literal), BigInt(i64), Symbol(id/key — identity-distinct, `Symbol(key)` builtin), Object (shared mutable property bag — `Object()` builtin, member get/set/index, missing prop → undefined), Function (first-class: arrows assigned to bindings are callable with param binding, missing arg → undefined), External (opaque handle); ECMA ToBoolean (undefined/null/±0/NaN/""/0n falsy) and ToNumber (undefined→NaN, null→0, bool→0|1, string parse); `typeof` builtin ("undefined"/"bigint"/"symbol"/"object"/"function"/"external"); Closure eval now yields a real Function value (was Null) (tests/value_model.rs, 7 tests)
 - [ ] **P0** — Objects — dynamic properties, prototypes, shape-friendly layout
 - [ ] **P0** — Closures & lexical environments with correct capture semantics
 - [ ] **P0** — Classes, this, new, prototype chain
