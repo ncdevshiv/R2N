@@ -289,7 +289,7 @@ phases:
       - id: "M1-T12"
         title: "Class components — state, props, lifecycle methods"
         priority: "P1"
-        done: false
+        done: true
       - id: "M1-T13"
         title: "Error boundaries — capture, fallback, recovery"
         priority: "P0"

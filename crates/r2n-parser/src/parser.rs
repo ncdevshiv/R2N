@@ -33,7 +33,7 @@ use crate::error::ParseError;
 use crate::lexer::{Lexer, Token, TokenKind};
 use r2n_ast::expr::{Element, Expr, Prop};
 use r2n_ast::op::{BinOp, UnOp};
-use r2n_ast::program::{Component, Decl, Import, Program, Stmt};
+use r2n_ast::program::{ClassComponent, Component, Decl, Import, Method, Program, Stmt};
 
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
@@ -122,9 +122,76 @@ impl<'a> Parser<'a> {
             TokenKind::Ident(kw) if kw == "component" => {
                 Ok(Decl::Component(self.parse_component()?))
             }
+            TokenKind::Ident(kw) if kw == "class" => Ok(Decl::Class(self.parse_class()?)),
             TokenKind::Ident(kw) if kw == "export" => self.parse_export(),
             _ => Err(self.err("expected a declaration (import/component/export)")),
         }
+    }
+
+    fn parse_class(&mut self) -> Result<ClassComponent, ParseError> {
+        self.advance()?; // "class"
+        let name = self.expect_ident()?;
+        if !matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "extends") {
+            return Err(self.err("expected `extends` after class name"));
+        }
+        self.advance()?;
+        if !matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "Component") {
+            return Err(self.err("class components must extend `Component`"));
+        }
+        self.advance()?;
+        self.expect(TokenKind::LeftBrace)?;
+        let mut state = None;
+        let mut methods = Vec::new();
+        while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
+            // Field: `state = expr;` (an ident NOT followed by `(`).
+            if let TokenKind::Ident(field) = &self.current.kind {
+                let fname = field.clone();
+                self.advance()?;
+                if self.check(&TokenKind::Equals) {
+                    if fname != "state" {
+                        return Err(self.err("only `state` may be a class field"));
+                    }
+                    self.advance()?;
+                    let value = self.parse_expr()?;
+                    self.expect(TokenKind::Semicolon)?;
+                    state = Some(value);
+                    continue;
+                }
+                if self.check(&TokenKind::LeftParen) {
+                    // Method: `name(params) { body }`.
+                    self.advance()?; // '('
+                    let mut params = Vec::new();
+                    if !self.check(&TokenKind::RightParen) {
+                        params.push(self.expect_ident()?);
+                        while self.check(&TokenKind::Comma) {
+                            self.advance()?;
+                            params.push(self.expect_ident()?);
+                        }
+                    }
+                    self.expect(TokenKind::RightParen)?;
+                    self.expect(TokenKind::LeftBrace)?;
+                    let mut body = Vec::new();
+                    while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
+                        body.push(self.parse_stmt()?);
+                    }
+                    self.expect(TokenKind::RightBrace)?;
+                    methods.push(Method {
+                        name: fname,
+                        params,
+                        body,
+                    });
+                    continue;
+                }
+                return Err(self.err("expected `=` (field) or `(` (method) after class member"));
+            }
+            return Err(self.err("expected a class member"));
+        }
+        self.expect(TokenKind::RightBrace)?;
+        Ok(ClassComponent {
+            name,
+            state,
+            methods,
+        })
     }
 
     fn parse_import(&mut self) -> Result<Decl, ParseError> {

@@ -1,7 +1,7 @@
 # R2N — Complete Execution Checklist
 
 > **R2N — React to Native** — Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime
-> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **47/106** tasks done (44%).
+> Generated 2026-08-29 · updated 2026-08-30 after full code re-audit · **48/106** tasks done (45%).
 > Audit basis: every task was verified against the actual implementation and test suite (54 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
 
 **How to use:** check items off in the interactive tracker ([index.html](index.html)) — it saves live in your browser. This file, [roadmap.yaml](roadmap.yaml), and [roadmap.toml](roadmap.toml) are the portable record; update them when a milestone closes.
@@ -69,7 +69,7 @@ _Stop hand-building IR. Lexer → parser → AST → JS IR → React IR, and the
 
 ## M1 — React Compatibility — Level 1
 
-`IN PROGRESS` · weeks 7–12 · progress **11/18** (61%)
+`IN PROGRESS` · weeks 7–12 · progress **12/18** (67%)
 
 _Behavioral compatibility with React core: full hook set, keys, context, effects, class components, error boundaries, portals, Suspense — validated by a behavioral conformance suite, not API presence._
 
@@ -84,7 +84,7 @@ _Behavioral compatibility with React core: full hook set, keys, context, effects
 - [x] **P0** — useRef — stable identity across renders: assignment expressions added to the parser/lowering (`target = value`, right-assoc, ident + member targets — twinned recovery parser); `Value::Ref { slot }` box whose `.current` reads/writes the hook-frame slot (same identity every render, writes persist without re-render, no dirty); `effectbodies now resolve the owning component's frame (EffectBody.frame_path) so hook handles inside effect bodies work — before, a throwaway frame broke ref reads in effects (tests/use_ref.rs, 3 tests)
 - [x] **P0** — useContext — Context / Provider / Consumer + value propagation: dotted JSX tags (`<Ctx.Provider>`, closes too — parser + recovery twin, previously unsupported); `createContext(default)` returns a `Value::Context { id, default }` handle (default lives on the handle, React contract); `ReactNode::ContextProvider` pushes (id, value) onto a SHARED per-pass context stack (`Env::ctx` Rc — child envs inherit it via `Env::child_of`); `useContext` reads the nearest value else the default; no-op `.map`-only child-call restriction broadened (any value call renders as text); return-validation gate now accepts Fragment/ContextProvider renderables (tests/use_context.rs, 6 tests)
 - [x] **P2** — useId: `HookSlot::Id` stores a globally-unique `:rN:` id generated once (atomic counter) — stable across renders of the instance, distinct per call site (slot-indexed), fresh after unmount/remount (slot cleared on frame reset, React behavior); frame-path requirement enforced (tests/use_id.rs, 3 tests)
-- [ ] **P1** — Class components — state, props, lifecycle methods
+- [x] **P1** — Class components — state, props, lifecycle methods: `class X extends Component { state = ...; render() {...} }` (parser both twinned; AST Decl::Class; lowering via ClassInfo/ClassMethod — render body becomes the component body, other methods IR blocks); `this` = Map{state, setState (a Setter on the state slot), methods (callable Handler values — call_value now invokes handler values in the current env, enabling this.method()); setState applies + dirty → minimal SetText (verified); shared `setup_class_env` used by BOTH component arm and render_root (a class can be the root — caught by the smoke test); lifecycle: componentDidMount once, componentDidUpdate on re-render, componentWillUnmount armed as an effect cleanup fired once at unmount (tests/class_components.rs, 5 tests)
 - [ ] **P0** — Error boundaries — capture, fallback, recovery
 - [ ] **P1** — Portals — logical parent vs rendering parent
 - [ ] **P1** — Suspense — Active → Suspended → Resolved with fallback
