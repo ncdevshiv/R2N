@@ -17,17 +17,22 @@ correspond to git tags that must point at a green CI commit on main.
   canonical module id so the `@module:{id}` key matches where the runtime binds it.
 - `FsResolver` / `MemResolver` normalize relative specifiers (`./`, `..`) so
   relative dynamic imports resolve deterministically.
+- Component-as-value rendering (M2-T09): a `ComponentRefVal` in value/children
+  position (e.g. `{ns.Widget}`, or `const C = ns.Widget; {C}`) now MOUNTS the
+  referenced component instead of printing the placeholder `<component#N>` handle
+  — the runtime re-dispatches to a real component mount, so the caller needs no
+  static import.
 
 ### Tests
 
 - 3 new tests (2 linker, 1 runtime) for dynamic-import discovery and specifier
-  canonicalization. Suite is now 250 green, clippy clean.
+  canonicalization. Suite is now 251 green, clippy clean.
 
 
 ## v0.1.0 — 2026-08-30
 
 First audited public checkpoint. Every claim below is enforced by the test
-suite (250 tests) and the CI pipeline (fmt, clippy `-D warnings`, tests,
+suite (251 tests) and the CI pipeline (fmt, clippy `-D warnings`, tests,
 audit-claim verification, dependency-boundary check).
 
 ### Added

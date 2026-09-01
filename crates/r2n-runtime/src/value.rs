@@ -164,9 +164,12 @@ pub enum Value {
     /// Serializable like every other ABI value; no Rust function pointers.
     Children(Vec<r2n_ir::react::ReactNode>),
     /// A reference to a component in the program's component table (M2-T09).
-    /// Produced when a module namespace exposes a component export; the runtime
-    /// can read it as a value (and, in a follow-up, render it in component
-    /// position) without recompiling the caller to a static import.
+    /// Produced when a module namespace exposes a component export. Reading it
+    /// as a value is first-class: rendering it in value/children position mounts
+    /// the referenced component (the engine re-dispatches `ComponentRefVal` to a
+    /// component mount), so the caller needs no static import. Rendering it as a
+    /// JSX tag (`<C/>`) with props remains a further parser/deep-lowerer
+    /// extension.
     ComponentRefVal(usize),
 }
 

@@ -21,7 +21,7 @@ use crate::hooks::{EffectBody, EffectJob, HookFrame};
 use crate::patch::{NodeId, Patch};
 use crate::scheduler::Scheduler;
 use crate::value::{RuntimeError, Value};
-use r2n_ir::react::ReactNode;
+use r2n_ir::react::{ComponentRef, ReactNode};
 use r2n_ir::runtime::RuntimeTemplate;
 use std::collections::{BTreeMap, HashMap};
 
@@ -613,6 +613,30 @@ fn render_node(
                     key: "t".to_string(),
                 });
             }
+            // A component reference rendered in value position (`{ns.Widget}`,
+            // or `const C = ns.Widget; {C}`) MOUNTS that component rather than
+            // printing its placeholder handle. Re-dispatch into the same
+            // component-mount path a static `<Widget/>` uses, with no props
+            // (React renders a component value by calling it with the current
+            // props/context — here the component is bare, so none).
+            if let Value::ComponentRefVal(idx) = &v {
+                return render_node(
+                    &ReactNode::Component {
+                        component: ComponentRef(*idx),
+                        props: Vec::new(),
+                    },
+                    inst_path,
+                    node_path,
+                    env,
+                    frames,
+                    scopes,
+                    splices,
+                    template,
+                    host,
+                    effects,
+                );
+            }
+
             RenderedNode::Text {
                 text: v.display(),
                 key: "t".to_string(),

@@ -71,8 +71,8 @@ fn dynamic_import_reads_a_module_namespace() {
     let out = render(&[("app", entry), ("widget", widget)]);
     assert_eq!(
         out,
-        "<div><component#1></div>",
-        "namespace-held component reads as its ComponentRefVal handle"
+        "<div><span className=\"w\">hi</span></div>",
+        "a namespace component rendered in value position mounts the component"
     );
 }
 #[test]
@@ -94,8 +94,35 @@ fn dynamically_only_imported_module_renders_its_component_ref() {
     let out = render(&[("app", entry), ("lazy", lazy)]);
     assert_eq!(
         out,
-        "<div><component#1></div>",
-        "dynamically-only module component reads as a ComponentRefVal"
+        "<div><span className=\"l\">z</span></div>",
+        "a dynamically-only module component mounts in value position"
+    );
+}
+
+#[test]
+fn component_ref_in_a_local_binding_renders_the_component() {
+    // The ref flows through a local `let`, so the linker cannot statically
+    // lower it to `ReactNode::Component`; the runtime must mount it when it
+    // sees the `ComponentRefVal` in value/children position.
+    let entry = r#"
+        component App() {
+            const m = import("widget");
+            const C = m.Widget;
+            return <div className="app">{C}</div>;
+        }
+        export default App;
+    "#;
+    let widget = r#"
+        component Widget() {
+            return <span className="w">hi</span>;
+        }
+        export { Widget };
+    "#;
+    let out = render(&[("app", entry), ("widget", widget)]);
+    assert_eq!(
+        out,
+        "<div className=\"app\"><span className=\"w\">hi</span></div>",
+        "a ComponentRefVal held in a local binding mounts the component"
     );
 }
 
