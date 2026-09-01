@@ -1,6 +1,7 @@
 //! M2-T09 runtime acceptance: a multi-module program linked into one flat table
-//! actually renders the imported component, and a module namespace bound for
-//! dynamic `import("...")` is readable as a `ComponentRefVal` value.
+//! actually renders the imported component, a module namespace bound for
+//! dynamic `import("...")` is readable as a `ComponentRefVal` value, and a
+//! namespace member resolved at render time renders as a JSX tag (`<m.Widget/>`).
 
 use r2n_compiler::{link_source, MemResolver};
 use r2n_renderer_memory::MemoryRenderer;
@@ -208,4 +209,82 @@ fn component_passed_as_prop_then_rendered_as_jsx_tag() {
     );
 }
 
+#[test]
+fn namespace_member_rendered_as_jsx_tag() {
+    // `<m.Widget/>` — a member-access JSX tag where `m` is a local bound to a
+    // module namespace. The lowerer emits a `ComponentExpr` whose component is
+    // `m.Widget`; the engine evaluates it at render time and mounts the member.
+    let entry = r#"
+        component App() {
+            const m = import("widget");
+            return <div className="app"><m.Widget/></div>;
+        }
+        export default App;
+    "#;
+    let widget = r#"
+        component Widget() {
+            return <span className="w">hi</span>;
+        }
+        export { Widget };
+    "#;
+    let out = render(&[("app", entry), ("widget", widget)]);
+    assert_eq!(
+        out,
+        "<div className=\"app\"><span className=\"w\">hi</span></div>",
+        "a namespace member rendered as a JSX tag mounts the member component"
+    );
+}
 
+#[test]
+fn namespace_member_jsx_tag_with_props_and_children() {
+    // Props and JSX children flow through the same mount path a static
+    // `<Widget/>` uses, but the component identity comes from `m.Widget`.
+    let entry = r#"
+        component App() {
+            const m = import("widget");
+            return <div className="app"><m.Widget name="from-prop">inner</m.Widget></div>;
+        }
+        export default App;
+    "#;
+    let widget = r#"
+        component Widget(name) {
+            return <span className="w">{name}:{children}</span>;
+        }
+        export { Widget };
+    "#;
+    let out = render(&[("app", entry), ("widget", widget)]);
+    assert_eq!(
+        out,
+        "<div className=\"app\"><span className=\"w\">from-prop:inner</span></div>",
+        "props and children flow through a namespace member rendered as a JSX tag"
+    );
+}
+
+#[test]
+fn namespace_member_via_prop_rendered_as_jsx_tag() {
+    // A namespace object passed as a prop and rendered as `<P.Widget/>`: the
+    // base `P` is a component param (in locals), so the lowerer emits a
+    // `ComponentExpr` resolved against the param at render time.
+    let entry = r#"
+        component Card(P) {
+            return <div className="card"><P.Widget/></div>;
+        }
+        component App() {
+            const m = import("widget");
+            return <Card P={m}/>;
+        }
+        export default App;
+    "#;
+    let widget = r#"
+        component Widget() {
+            return <span className="w">hi</span>;
+        }
+        export { Widget };
+    "#;
+    let out = render(&[("app", entry), ("widget", widget)]);
+    assert_eq!(
+        out,
+        "<div className=\"card\"><span className=\"w\">hi</span></div>",
+        "a namespace object passed as a prop renders a member component as a JSX tag"
+    );
+}

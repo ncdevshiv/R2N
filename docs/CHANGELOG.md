@@ -28,6 +28,12 @@ correspond to git tags that must point at a green CI commit on main.
   engine mounts the referenced component with props and children. This lets a
   component be passed as a value (prop, namespace member, or local) and rendered
   as a JSX tag without any static binding.
+- Namespace-member JSX tag (M2-T09): `<ns.X/>` where `ns` is a local bound to a
+  module namespace (or a namespace object passed as a prop) resolves the member
+  at RENDER time — the lowerer emits a `ReactNode::ComponentExpr` for the member
+  access (`m.Widget`) and the engine mounts the referenced component. A dotted
+  JSX tag is now always treated as a component form (never a host element), so
+  `<m.Widget/>` works like the equivalent `<C/>` when a namespace is in scope.
 
 ### Tests
 
@@ -35,7 +41,10 @@ correspond to git tags that must point at a green CI commit on main.
   canonicalization.
 - 3 new runtime tests for the dynamic-component JSX tag (a local value as a bare
   `<C/>` tag, a tag with props+children, and a component passed as a prop then
-  rendered as `<P/>`). Suite is now 254 green, clippy clean.
+  rendered as `<P/>`).
+- 3 new runtime tests for the namespace-member JSX tag (`<m.Widget/>` bare, with
+  props+children, and a namespace object passed as a prop then rendered as
+  `<P.Widget/>`). Suite is now 257 green, clippy clean.
 
 
 ## v0.1.0 — 2026-08-30

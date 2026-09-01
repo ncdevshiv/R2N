@@ -1002,6 +1002,26 @@ fn lower_element(
             }
             props.push(("children".to_string(), JsExpr::Children(children)));
         }
+        // `<ns.X/>` — a member-access component tag. The base must be a LOCAL
+        // (param/let/const) bound to a module namespace or component holder;
+        // the member is resolved at RENDER time off that value (e.g.
+        // `const ns = import("widget"); return <ns.Widget/>;`, or a namespace
+        // object passed as a prop and rendered `<P.Widget/>`). A dotted tag is
+        // never a static table entry, so it lowers to a `ReactNode::ComponentExpr`
+        // whose component is a member access evaluated in the parent scope.
+        if let Some((base, member)) = e.tag.rsplit_once('.') {
+            return if !base.is_empty() && locals.contains(base) {
+                Ok(ReactNode::ComponentExpr {
+                    component: JsExpr::Get {
+                        base: Box::new(JsExpr::Var(base.to_string())),
+                        prop: member.to_string(),
+                    },
+                    props,
+                })
+            } else {
+                Err(LowerError::UnknownComponent(e.tag.clone()))
+            };
+        }
         // Static component: an uppercase tag naming a component in `index`
         // (own declarations and imported bindings) — a fixed table id, so it
         // lowers once at build time to a `ReactNode::Component`.

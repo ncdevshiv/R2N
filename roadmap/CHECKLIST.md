@@ -2,7 +2,7 @@
 
 > **R2N — React to Native** — Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime
 > Generated 2026-08-29 · updated 2026-08-31 · **62/106** tasks done (58%).
-> Audit basis: every task was verified against the actual implementation and test suite (254 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
+> Audit basis: every task was verified against the actual implementation and test suite (257 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
 
 **How to use:** check items off in the interactive tracker ([index.html](index.html)) — it saves live in your browser. This file, [roadmap.yaml](roadmap.yaml), and [roadmap.toml](roadmap.toml) are the portable record; update them when a milestone closes.
 

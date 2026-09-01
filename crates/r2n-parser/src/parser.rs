@@ -1154,7 +1154,12 @@ impl<'a> Parser<'a> {
             let member = self.expect_ident()?;
             tag = format!("{tag}.{member}");
         }
-        let is_component = !is_fragment && Self::is_component_name(&tag);
+        // A dotted tag (`<ns.X/>`, `<Ctx.Provider>`) is always a member-access
+        // element (a JSX "component" form), never a host element — regardless of
+        // the base's case. React treats any dotted tag as an expression that
+        // evaluates to an element type, so only a plain lowercase identifier is
+        // a host element.
+        let is_component = !is_fragment && (Self::is_component_name(&tag) || tag.contains('.'));
         let mut props = Vec::new();
         // attributes until "/>" or ">"
         loop {

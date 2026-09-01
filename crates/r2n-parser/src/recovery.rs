@@ -1179,12 +1179,15 @@ impl<'e, 'a> SpanParser<'e, 'a> {
             let member = self.expect_ident()?;
             tag = format!("{tag}.{member}");
         }
+        // Mirrors parser.rs: a dotted tag is a member-access element, never a
+        // host element, regardless of the base's case.
         let is_component = !is_fragment
-            && tag
-                .chars()
-                .next()
-                .map(|c| c.is_ascii_uppercase())
-                .unwrap_or(false);
+            && (tag.contains('.')
+                || tag
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_uppercase())
+                    .unwrap_or(false));
         let mut props = Vec::new();
         loop {
             match &self.cur().kind {
