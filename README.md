@@ -54,7 +54,7 @@ Everything in M2–M7: the remainder of full ECMAScript semantics (objects/proto
 
 ```bash
 cargo build --workspace
-cargo test --workspace          # 251 tests incl. architecture + acceptance guards
+cargo test --workspace          # 254 tests incl. architecture + acceptance guards
 cargo clippy --workspace --all-targets -- -D warnings
 scripts/verify-audit-claims.sh  # re-derives every README/roadmap claim from source
 ```

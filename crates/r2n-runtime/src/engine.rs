@@ -642,6 +642,41 @@ fn render_node(
                 key: "t".to_string(),
             }
         }
+        ReactNode::ComponentExpr { component, props } => {
+            // `<C>` where `C` is a local value bound to a component reference
+            // (e.g. `const C = m.Widget;` or a component passed as a prop and
+            // rendered as `<P/>`). The identity is a RUNTIME value, not a static
+            // table index — evaluate it in the parent scope, then re-dispatch
+            // into the exact same mount path a static `<Widget/>` uses.
+            let v = {
+                let frame = frames.get(inst_path);
+                eval(component, env, frame, host, &template.components, effects)?
+            };
+            let idx = match v {
+                Value::ComponentRefVal(i) => i,
+                other => {
+                    return Err(RuntimeError::new(format!(
+                        "expected a component reference value in <tag>, got {}",
+                        other.display()
+                    )))
+                }
+            };
+            return render_node(
+                &ReactNode::Component {
+                    component: ComponentRef(idx),
+                    props: props.clone(),
+                },
+                inst_path,
+                node_path,
+                env,
+                frames,
+                scopes,
+                splices,
+                template,
+                host,
+                effects,
+            );
+        }
         ReactNode::Component { component, props } => {
             let comp = template.components[component.index()].clone();
             // This component instance gets its own path: parent's instance
@@ -1675,7 +1710,7 @@ impl RenderedNode {
 /// same keyed child survives a branch flip.
 fn static_key_expr(node: &ReactNode) -> Option<&r2n_ir::js::JsExpr> {
     match node {
-        ReactNode::Host { props, .. } | ReactNode::Component { props, .. } => {
+        ReactNode::Host { props, .. } | ReactNode::Component { props, .. } | ReactNode::ComponentExpr { props, .. } => {
             props.iter().find(|(n, _)| n == "key").map(|(_, e)| e)
         }
         ReactNode::If { then, else_, .. } => {

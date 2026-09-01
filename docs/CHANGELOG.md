@@ -22,17 +22,26 @@ correspond to git tags that must point at a green CI commit on main.
   referenced component instead of printing the placeholder `<component#N>` handle
   — the runtime re-dispatches to a real component mount, so the caller needs no
   static import.
+- Dynamic-component JSX tag (M2-T09): a component value in TAG position
+  (`<C/>`, `<C prop=...>child</C>`) where `C` is a local `let`/`const`/param
+  resolves at RENDER time — the lowerer emits a `ReactNode::ComponentExpr` and the
+  engine mounts the referenced component with props and children. This lets a
+  component be passed as a value (prop, namespace member, or local) and rendered
+  as a JSX tag without any static binding.
 
 ### Tests
 
 - 3 new tests (2 linker, 1 runtime) for dynamic-import discovery and specifier
-  canonicalization. Suite is now 251 green, clippy clean.
+  canonicalization.
+- 3 new runtime tests for the dynamic-component JSX tag (a local value as a bare
+  `<C/>` tag, a tag with props+children, and a component passed as a prop then
+  rendered as `<P/>`). Suite is now 254 green, clippy clean.
 
 
 ## v0.1.0 — 2026-08-30
 
 First audited public checkpoint. Every claim below is enforced by the test
-suite (251 tests) and the CI pipeline (fmt, clippy `-D warnings`, tests,
+suite (254 tests) and the CI pipeline (fmt, clippy `-D warnings`, tests,
 audit-claim verification, dependency-boundary check).
 
 ### Added

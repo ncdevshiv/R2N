@@ -126,3 +126,86 @@ fn component_ref_in_a_local_binding_renders_the_component() {
     );
 }
 
+#[test]
+fn local_binding_component_rendered_as_jsx_tag() {
+    // `const C = m.Widget;` then `<C/>` — the JSX tag names a LOCAL binding,
+    // not a static component. The lowerer emits `ReactNode::ComponentExpr`; the
+    // engine resolves `C` to a `ComponentRefVal` at render time and mounts it.
+    let entry = r#"
+        component App() {
+            const m = import("widget");
+            const C = m.Widget;
+            return <div className="app"><C/></div>;
+        }
+        export default App;
+    "#;
+    let widget = r#"
+        component Widget() {
+            return <span className="w">hi</span>;
+        }
+        export { Widget };
+    "#;
+    let out = render(&[("app", entry), ("widget", widget)]);
+    assert_eq!(
+        out,
+        "<div className=\"app\"><span className=\"w\">hi</span></div>",
+        "a local component value used as a JSX tag mounts the component"
+    );
+}
+
+#[test]
+fn local_binding_component_jsx_tag_with_props_and_children() {
+    // Props and JSX children flow through the SAME mount path a static
+    // `<Widget/>` uses: `ComponentExpr` re-dispatches into the component arm,
+    // which evaluates props in the parent scope and splices children.
+    let entry = r#"
+        component App() {
+            const m = import("widget");
+            const C = m.Widget;
+            return <div className="app"><C name="from-prop">inner</C></div>;
+        }
+        export default App;
+    "#;
+    let widget = r#"
+        component Widget(name) {
+            return <span className="w">{name}:{children}</span>;
+        }
+        export { Widget };
+    "#;
+    let out = render(&[("app", entry), ("widget", widget)]);
+    assert_eq!(
+        out,
+        "<div className=\"app\"><span className=\"w\">from-prop:inner</span></div>",
+        "props and children flow through a component rendered as a JSX tag"
+    );
+}
+
+#[test]
+fn component_passed_as_prop_then_rendered_as_jsx_tag() {
+    // A component value passed as a prop and rendered as `<P/>` is never
+    // statically linkable — the identity is only known at render time.
+    let entry = r#"
+        component Card(P) {
+            return <div className="card"><P/></div>;
+        }
+        component App() {
+            const m = import("widget");
+            return <Card P={m.Widget}/>;
+        }
+        export default App;
+    "#;
+    let widget = r#"
+        component Widget() {
+            return <span className="w">hi</span>;
+        }
+        export { Widget };
+    "#;
+    let out = render(&[("app", entry), ("widget", widget)]);
+    assert_eq!(
+        out,
+        "<div className=\"card\"><span className=\"w\">hi</span></div>",
+        "a component passed as a prop and rendered as <P/> mounts the component"
+    );
+}
+
+

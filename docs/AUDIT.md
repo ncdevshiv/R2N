@@ -1,7 +1,7 @@
 # R2N Audit Report — 2026-08-30
 
 > **⚠️ Superseded for live status.** This is the original 2026-08-30 audit
-> snapshot. The current baseline is **62/106 tasks, 251 tests green**, maintained
+> snapshot. The current baseline is **62/106 tasks, 254 tests green**, maintained
 > live in `roadmap/CHECKLIST.md` and re-verified automatically by
 > `scripts/verify-audit-claims.sh` on every PR. Use those for current numbers;
 > this document records the findings of the v0.1.0 audit.
