@@ -1338,6 +1338,7 @@ fn call_var(
                 Value::GeneratorFn(_) => "function",
                 Value::Generator(_) | Value::ArrayIter(_) => "object",
                 Value::Settler { .. } => "function",
+                Value::ComponentRefVal(_) => "object",
             }))
         }
         "useRef" => {

@@ -59,15 +59,34 @@ pub struct ClassMethod {
 pub const ARTIFACT_FORMAT_VERSION: u32 = 1;
 
 /// The whole compiled program: a table of components plus the root index.
-/// Carries an artifact manifest: format version + generator version, so any
-/// consumer can verify compatibility before executing (stamped by the
-/// compiler; round-trips through JSON with the artifact).
-/// A lowered top-level generator function (M2-T08).
+/// Carries an artifact manifest: format version + generator version + React
+/// semantics level. A lowered top-level generator function (M2-T08).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeneratorIr {
     pub name: String,
     pub params: Vec<String>,
     pub segments: Vec<crate::js::JsAsyncSegment>,
+}
+
+/// A linked module's export surface (M2-T09). The linker flattens every
+/// reachable module into ONE global component table; this records, per module,
+/// which exported names map to which global component index so the runtime can
+/// build the `@module:{id}` namespace record that `import("path")` resolves to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ModuleIr {
+    /// Canonical module id — also the `@module:{id}` namespace name the runtime
+    /// binds into the global env for dynamic import.
+    pub id: String,
+    /// Exported component names -> GLOBAL component index, in declaration order.
+    /// Includes the reserved `"default"` entry for `export default Name`.
+    pub exports: Vec<(String, usize)>,
+}
+
+impl ModuleIr {
+    /// The runtime namespace name for this module (the key bound in global_env).
+    pub fn namespace(&self) -> String {
+        format!("@module:{}", self.id)
+    }
 }
 
 /// The whole compiled program: a table of components plus the root index.
@@ -88,6 +107,9 @@ pub struct RuntimeTemplate {
     /// state machines; the runtime binds them as values in the global env.
     #[serde(default)]
     pub generators: Vec<GeneratorIr>,
+    /// Linked module metadata (M2-T09). Empty for a single-file program.
+    #[serde(default)]
+    pub modules: Vec<ModuleIr>,
     /// Artifact manifest (M0.3-T09): format + generator stamps.
     #[serde(default)]
     pub manifest: ArtifactManifest,

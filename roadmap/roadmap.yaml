@@ -317,7 +317,7 @@ phases:
 
   - id: "M2"
     name: "JavaScript Compatibility — Level 2"
-    status: "in-progress"   # full value model done (M2-T01); objects/closures/classes/coercion remain
+    status: "in-progress"   # M2-T01..T08 done (value model, objects, closures, classes, coercion, exceptions, promises, generators); modules & the rest remain
     window: { start_week: 12, end_week: 20 }
     color: "#fbbf24"
     blurb: "Full ECMAScript semantics in the compatibility engine: closures, classes, prototypes, coercion, exceptions, promises, generators, modules — the layer that makes arbitrary React code actually run."
@@ -329,7 +329,7 @@ phases:
       - id: "M2-T02"
         title: "Objects — dynamic properties, prototypes, shape-friendly layout"
         priority: "P0"
-        done: false
+        done: true
       - id: "M2-T03"
         title: "Closures & lexical environments with correct capture semantics"
         priority: "P0"

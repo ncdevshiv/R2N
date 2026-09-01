@@ -66,6 +66,11 @@ pub enum Expr {
     /// marks the `return await p` form (the resolved value COMPLETES the
     /// async fn, vs plain `await p;` which only suspends).
     Await { value: Box<Expr>, from_return: bool },
+    /// `import("path")` — dynamic import (M2-T09). The specifier must be a
+    /// string literal: the linker resolves it to a module at compile time and
+    /// lowering rewrites the expression to the reserved `@module:N` variable,
+    /// which the runtime evaluates to the module's namespace record.
+    DynImport { specifier: String },
     /// A block of expression statements, evaluated in order; the block's value
     /// is its last expression. Produced for block-bodied arrows.
     Block(Vec<Expr>),
@@ -164,6 +169,7 @@ impl fmt::Display for Expr {
                 }
                 Ok(())
             }
+            Expr::DynImport { specifier } => write!(f, "import({specifier:?})"),
         }
     }
 }

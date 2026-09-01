@@ -192,6 +192,17 @@ impl Runtime {
                 })),
             );
         }
+        // Module namespaces (M2-T09): bind `@module:{id}` -> a record mapping
+        // each exported component name to a `ComponentRefVal` handle, so a
+        // dynamic `import("id")` (lowered to `@module:{id}`) resolves to the
+        // module's namespace at runtime.
+        for m in &template.modules {
+            let mut ns: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+            for (name, idx) in &m.exports {
+                ns.insert(name.clone(), Value::ComponentRefVal(*idx));
+            }
+            global_env.define(&m.namespace(), Value::Map(ns));
+        }
         Self {
             global_env,
             template,

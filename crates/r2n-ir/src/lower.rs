@@ -64,6 +64,56 @@ pub fn lower_dev(program: &Program) -> Result<RuntimeTemplate, LowerError> {
     lower_with(program, true)
 }
 
+/// Module-aware lowering (M2-T09): lower a single module's declarations into
+/// runtime IR, resolving every component reference (own declarations AND
+/// imported bindings) through `names` — a map of referenceable name -> GLOBAL
+/// component index. The linker builds `names` per module so cross-module
+/// imports (static `import`, and the `export default` / `export {}` surfaces)
+/// resolve to the target's global index.
+///
+/// Returns the module's components keyed by their global index (the linker
+/// pre-assigns contiguous indices per module, so there are no gaps), its
+/// generator functions, and the `export default` name if present. StrictMode
+/// stripping is deliberately NOT performed here: the linker strips the merged
+/// artifact once, from the entry build's mode.
+pub type LoweredModuleParts = (
+    Vec<(usize, RuntimeComponent)>,
+    Vec<crate::runtime::GeneratorIr>,
+    Option<String>,
+);
+
+pub fn lower_module_parts(
+    program: &Program,
+    names: &HashMap<String, usize>,
+) -> Result<LoweredModuleParts, LowerError> {
+    let mut parts = Vec::new();
+    let mut generators = Vec::new();
+    let mut default = None;
+    for decl in &program.decls {
+        match decl {
+            Decl::Component(c) => {
+                let idx = names
+                    .get(&c.name)
+                    .copied()
+                    .ok_or_else(|| LowerError::UnknownComponent(c.name.clone()))?;
+                parts.push((idx, lower_component(c, names)?));
+            }
+            Decl::Class(c) => {
+                let idx = names
+                    .get(&c.name)
+                    .copied()
+                    .ok_or_else(|| LowerError::UnknownComponent(c.name.clone()))?;
+                parts.push((idx, lower_class(c, names)?));
+            }
+            Decl::GeneratorFn(g) => generators.push(lower_generator_fn(g, names)?),
+            Decl::ExportDefault(name) => default = Some(name.clone()),
+            Decl::Import(_) | Decl::ExportNamed(_) => {}
+        }
+    }
+    Ok((parts, generators, default))
+}
+
+
 fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, LowerError> {
     // 1. Build the component name -> index table.
     let mut index: HashMap<String, usize> = HashMap::new();
@@ -73,7 +123,10 @@ fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, L
         let name = match decl {
             Decl::Component(c) => c.name.clone(),
             Decl::Class(c) => c.name.clone(),
-            Decl::Import(_) | Decl::ExportDefault(_) | Decl::GeneratorFn(_) => continue,
+            Decl::Import(_)
+            | Decl::ExportDefault(_)
+            | Decl::ExportNamed(_)
+            | Decl::GeneratorFn(_) => continue,
         };
         index.insert(name.clone(), components.len());
         components.push(RuntimeComponent {
@@ -114,6 +167,7 @@ fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, L
         components,
         root,
         generators,
+        modules: Vec::new(),
         manifest: RuntimeTemplate::new().manifest,
         strict_mode: false,
     };
@@ -546,6 +600,14 @@ fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, Low
                 })
                 .transpose()?,
         },
+        // `import("path")` — dynamic import (M2-T09): lowers to the reserved
+        // `@module:` variable, which the runtime evaluates to the module's
+        // namespace record. The specifier is a compile-time string literal, so
+        // the reserved name is deterministic; the linker (M2-T09) maps it to
+        // the module's table index `N` when assembling the program.
+        Expr::DynImport { specifier } => {
+            JsExpr::Var(format!("@module:{specifier}"))
+        }
         Expr::Element(_) => {
             return Err(LowerError::InvalidListMap(
                 "element used as a value".to_string(),

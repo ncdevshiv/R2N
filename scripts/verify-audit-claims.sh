@@ -12,17 +12,20 @@
 #   5. The architecture rules hold: runtime has no parser/ast/compiler dep
 #      (also enforced by cargo test, checked here independently)
 #   6. No stub markers anywhere in shipped code
+#   7. Each yaml/toml done flag matches the matching CHECKLIST checkbox (per-task)
+#   8. README per-milestone progress (N/M) matches yaml task done/total counts
+#   9. README "N tests" claim matches the live test-suite count
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 fail() { echo "AUDIT CLAIM MISMATCH: $1" >&2; exit 1; }
 
-echo "[1/6] CHECKLIST.md header vs actual checkboxes"
+echo "[1/9] CHECKLIST.md header vs actual checkboxes"
 header=$(grep -oE '\*\*[0-9]+/106\*\* tasks done' roadmap/CHECKLIST.md | head -1 | sed -E 's/\*\*([0-9]+)\/106\*\* tasks done/\1/')
 actual=$(grep -c '^\- \[x\]' roadmap/CHECKLIST.md)
 [ "$header" = "$actual" ] || fail "CHECKLIST.md claims $header/106 done but has $actual checked boxes"
 
-echo "[2/6] roadmap.yaml vs roadmap.toml task flags"
+echo "[2/9] roadmap.yaml vs roadmap.toml task flags"
 python - <<'PY'
 import sys, tomllib
 try:
@@ -46,7 +49,7 @@ for tid in y:
 print("    ok: yaml and toml agree on", len(y), "tasks")
 PY
 
-echo "[3/6] Per-milestone progress lines vs [x] counts"
+echo "[3/9] Per-milestone progress lines vs [x] counts"
 python - <<'PY'
 import re, sys
 s = open('roadmap/CHECKLIST.md', encoding='utf-8').read()
@@ -63,7 +66,7 @@ for m in re.finditer(r'## (M[0-9.]+)[^\n]*\n\n`[^`]+`[^\n]*progress \*\*(\d+)/(\
 print("    ok: all progress lines match section counts")
 PY
 
-echo "[4/6] Milestone status agreement: yaml/toml vs CHECKLIST vs README vs ROADMAP"
+echo "[4/9] Milestone status agreement: yaml/toml vs CHECKLIST vs README vs ROADMAP"
 python - <<'PY'
 import re, sys, tomllib
 try:
@@ -146,15 +149,78 @@ for mid, st in status.items():
 print("    ok: milestone status agrees across yaml, toml, CHECKLIST, README, ROADMAP for", len(status), "milestones")
 PY
 
-echo "[5/6] Architecture boundary: runtime deps"
+echo "[5/9] Architecture boundary: runtime deps"
 deps=$(sed -n '/^\[dependencies\]/,/^\[/p' crates/r2n-runtime/Cargo.toml | grep -oE 'r2n-[a-z-]+' || true)
 for forbidden in r2n-parser r2n-ast r2n-compiler; do
   echo "$deps" | grep -q "$forbidden" && fail "r2n-runtime depends on $forbidden"
 done
 echo "    ok: runtime depends only on: $(echo $deps | tr '\n' ' ')"
 
-echo "[6/6] No stub markers in shipped code"
+echo "[6/9] No stub markers in shipped code"
 hits=$(grep -rn -E 'todo!|unimplemented!|FIXME|XXX: stub|placeholder implementation' crates --include='*.rs' | grep -v '/tests/' || true)
 [ -z "$hits" ] || { echo "$hits" >&2; fail "stub markers found in shipped code"; }
+
+echo "[7/9] yaml/toml done flags vs CHECKLIST checkboxes (per-task)"
+python - <<'PY'
+import re, sys, tomllib
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)
+yml = yaml.safe_load(open('roadmap/roadmap.yaml', encoding='utf-8'))
+checklist = open('roadmap/CHECKLIST.md', encoding='utf-8').read()
+sections = {}
+cur = None
+for ln in checklist.splitlines():
+    m = re.match(r'## (M[0-9.]+)', ln)
+    if m:
+        cur = m.group(1); sections[cur] = []
+    elif cur and ln.startswith('- ['):
+        sections[cur].append(ln.strip())
+total = 0
+for ph in yml['phases']:
+    mid = ph['id']
+    tasks = ph['tasks']
+    lines = sections.get(mid, [])
+    if len(tasks) != len(lines):
+        sys.exit(f"AUDIT CLAIM MISMATCH: phase {mid} has {len(tasks)} tasks in yaml but {len(lines)} checkbox lines in CHECKLIST")
+    for t, ln0 in zip(tasks, lines):
+        total += 1
+        checked = ln0.startswith('- [x]')
+        if checked != t['done']:
+            sys.exit(f"AUDIT CLAIM MISMATCH: {t['id']} done={t['done']} in yaml/toml but CHECKLIST shows '{ln0[:5].strip()}'")
+print("    ok: all", total, "yaml/toml done flags match CHECKLIST checkboxes")
+PY
+
+echo "[8/9] README per-milestone progress vs yaml task counts"
+python - <<'PY'
+import re, sys, tomllib
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)
+yml = yaml.safe_load(open('roadmap/roadmap.yaml', encoding='utf-8'))
+readme = open('README.md', encoding='utf-8').read()
+ok = 0
+for ph in yml['phases']:
+    mid = ph['id']
+    total = len(ph['tasks'])
+    done = sum(1 for t in ph['tasks'] if t['done'])
+    m = re.search(rf'\| {re.escape(mid)}[^|]*\| [^|]*\| (\d+)/(\d+) \|', readme)
+    if not m:
+        continue  # grouped/planned rows carry '—', not a fraction
+    rd, rt = int(m.group(1)), int(m.group(2))
+    if rd != done or rt != total:
+        sys.exit(f"AUDIT CLAIM MISMATCH: README row for {mid} says {rd}/{rt} but yaml tasks say {done}/{total}")
+    ok += 1
+print("    ok: README per-milestone progress matches yaml task counts for", ok, "milestones")
+PY
+
+echo "[9/9] README test-count claim vs live suite"
+actual_tests=$(cargo test --workspace --no-fail-fast 2>&1 | grep -oE '[0-9]+ passed' | awk '{s+=$1} END{print s+0}')
+claimed=$(grep -oE '# [0-9]+ tests' README.md | grep -oE '[0-9]+' | head -1)
+[ -n "$claimed" ] || fail "README has no '<N> tests' claim to verify"
+[ "$actual_tests" = "$claimed" ] || fail "README claims $claimed tests but the suite runs $actual_tests"
+echo "    ok: README test count $claimed matches the live suite ($actual_tests)"
 
 echo "AUDIT OK: every claim re-derived from source and consistent."

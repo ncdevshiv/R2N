@@ -14,6 +14,11 @@ pub enum Decl {
     Import(Import),
     /// `export default Name;` — marks the root component of the app.
     ExportDefault(String),
+    /// `export { a, b as c };` — named exports of module-level declarations
+    /// (components, classes, generator fns). Each pair is `(local, exported)`:
+    /// the alias form `b as c` exports local binding `b` under the name `c`
+    /// (M2-T09).
+    ExportNamed(ExportNamed),
     /// `function* name(params) { ... }` — a generator function (M2-T08).
     /// The body is a statement list; `yield` splits it into segments.
     GeneratorFn(GeneratorFn),
@@ -25,6 +30,14 @@ pub struct GeneratorFn {
     pub name: String,
     pub params: Vec<String>,
     pub body: Vec<Stmt>,
+}
+
+/// A named-export declaration: `export { a, b as c };` (M2-T09).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportNamed {
+    /// `(local, exported)` pairs: the local binding name and the name it is
+    /// exported under (equal unless the `b as c` alias form was used).
+    pub names: Vec<(String, String)>,
 }
 
 /// A component definition.
@@ -63,11 +76,35 @@ pub struct Method {
     pub body: Vec<Stmt>,
 }
 
-/// `import { a, b } from "path";`
+/// `import ... from "path";` — importing declarations from another R2N
+/// module (the specifier resolves relative to the importing source, M2-T09).
+///
+/// Supports the static ES module forms:
+///   - `import { a, b as c } from "path"` — named bindings, with optional
+///     local aliasing (`(imported, local)` pairs)
+///   - `import Def from "path"` — default binding
+///   - `import * as ns from "path"` — namespace binding
+///   - `import "path"` — side-effect only (all binding fields empty)
+///
+/// and the combinations `import Def, { a } from "path"` /
+/// `import Def, * as ns from "path"`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Import {
-    pub names: Vec<String>,
+    /// Default binding, if any: `import Def from ...`.
+    pub default_: Option<String>,
+    /// Named bindings as `(imported, local)` pairs: `import { a, b as c }`.
+    pub named: Vec<(String, String)>,
+    /// Namespace binding: `import * as ns from ...`.
+    pub namespace: Option<String>,
+    /// The module specifier (a relative path to another R2N source file).
     pub path: String,
+}
+
+impl Import {
+    /// True when the import binds nothing (side-effect-only `import "path"`).
+    pub fn is_side_effect(&self) -> bool {
+        self.default_.is_none() && self.namespace.is_none() && self.named.is_empty()
+    }
 }
 
 /// A statement inside a component body.

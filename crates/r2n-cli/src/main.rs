@@ -14,7 +14,9 @@
 
 use std::fs;
 use std::process::exit;
+use std::path::{Path, PathBuf};
 
+use r2n_compiler::{link_source, FsResolver, LinkError};
 use r2n_runtime::{NodeId, Renderer};
 
 fn main() {
@@ -33,19 +35,33 @@ fn main() {
         }
     };
 
-    let template = match r2n_compiler::compile_source(&src) {
+    // Resolve the entry as an absolute path so multi-file `import` specifiers
+    // resolve relative to the entry's directory (M2-T09).
+    let abs = absolute_path(file);
+    let resolver = FsResolver::new(
+        Path::new(&abs)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(".")),
+    );
+    let template = match link_source(&src, &abs, &resolver) {
         Ok(t) => t,
-        Err(_) => {
-            // Compile failed: report every error found in the source, not
-            // just the first — rendered with the offending line and a caret.
-            match r2n_compiler::collect_diagnostics(&src) {
-                Ok(all) => {
-                    for diag in &all {
-                        eprintln!("{diag}\n");
+        Err(e) => {
+            // A parse failure in the entry is best reported with recovery
+            // diagnostics (every error + caret); a module-resolution/link
+            // failure is already precise enough to print directly.
+            if matches!(e, LinkError::Parse(_)) {
+                match r2n_compiler::collect_diagnostics(&src) {
+                    Ok(all) if !all.is_empty() => {
+                        for diag in &all {
+                            eprintln!("{diag}\n");
+                        }
+                        eprintln!("found {} error(s)", all.len());
                     }
-                    eprintln!("found {} error(s)", all.len());
+                    _ => eprintln!("link error: {e}"),
                 }
-                Err(fatal) => eprintln!("compile error: {fatal}"),
+            } else {
+                eprintln!("link error: {e}");
             }
             exit(1);
         }
@@ -125,4 +141,19 @@ fn first_clickable(r: &r2n_renderer_memory::MemoryRenderer) -> Option<NodeId> {
         }
         _ => None,
     })
+}
+
+/// Turn a CLI file argument into an absolute path for deterministic module
+/// specifier resolution. We avoid `fs::canonicalize` because it injects the
+/// `\\?\` prefix on Windows, which is hostile to the normalized module ids the
+/// linker produces.
+fn absolute_path(file: &str) -> String {
+    let p = Path::new(file);
+    if p.is_absolute() {
+        p.display().to_string()
+    } else {
+        std::env::current_dir()
+            .map(|d| d.join(file).display().to_string())
+            .unwrap_or_else(|_| file.to_string())
+    }
 }

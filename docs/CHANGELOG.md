@@ -3,10 +3,31 @@
 All notable changes. The format is based on Keep a Changelog, and releases
 correspond to git tags that must point at a green CI commit on main.
 
+## Unreleased
+
+### Added
+
+- Multi-module linking (M2-T09): `link_source` / `link_source_dev` flatten an
+  entry source and every module it reaches into ONE global `RuntimeTemplate`,
+  resolving cross-module `import`/`export` bindings to global component indices;
+  `import("path")` binds a module namespace as a `ComponentRefVal` record.
+- Dynamic-import discovery + canonicalization (M2-T09): the linker walks the AST
+  for `import("path")`, so a module reachable ONLY dynamically is still linked,
+  laid out, and bound as a namespace; its specifier is rewritten to the resolved
+  canonical module id so the `@module:{id}` key matches where the runtime binds it.
+- `FsResolver` / `MemResolver` normalize relative specifiers (`./`, `..`) so
+  relative dynamic imports resolve deterministically.
+
+### Tests
+
+- 3 new tests (2 linker, 1 runtime) for dynamic-import discovery and specifier
+  canonicalization. Suite is now 250 green, clippy clean.
+
+
 ## v0.1.0 — 2026-08-30
 
 First audited public checkpoint. Every claim below is enforced by the test
-suite (30 tests) and the CI pipeline (fmt, clippy `-D warnings`, tests,
+suite (250 tests) and the CI pipeline (fmt, clippy `-D warnings`, tests,
 audit-claim verification, dependency-boundary check).
 
 ### Added

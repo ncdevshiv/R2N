@@ -16,7 +16,7 @@ pub mod ser;
 pub mod value;
 
 pub use js::JsExpr;
-pub use lower::{lower, lower_dev, LowerError};
+pub use lower::{lower, lower_dev, lower_module_parts, LowerError};
 pub use react::{ComponentRef, ReactNode};
 pub use runtime::{RuntimeComponent, RuntimeTemplate, TemplateNodeId};
 pub use value::Literal;
