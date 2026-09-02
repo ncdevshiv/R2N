@@ -21,9 +21,9 @@ cd "$(dirname "$0")/.."
 fail() { echo "AUDIT CLAIM MISMATCH: $1" >&2; exit 1; }
 
 echo "[1/9] CHECKLIST.md header vs actual checkboxes"
-header=$(grep -oE '\*\*[0-9]+/106\*\* tasks done' roadmap/CHECKLIST.md | head -1 | sed -E 's/\*\*([0-9]+)\/106\*\* tasks done/\1/')
+header=$(grep -oE '\*\*[0-9]+/[0-9]+\*\* tasks done' roadmap/CHECKLIST.md | head -1 | sed -E 's/\*\*([0-9]+)\/[0-9]+\*\* tasks done/\1/')
 actual=$(grep -c '^\- \[x\]' roadmap/CHECKLIST.md)
-[ "$header" = "$actual" ] || fail "CHECKLIST.md claims $header/106 done but has $actual checked boxes"
+[ "$header" = "$actual" ] || fail "CHECKLIST.md claims $header tasks done but has $actual checked boxes"
 
 echo "[2/9] roadmap.yaml vs roadmap.toml task flags"
 python - <<'PY'

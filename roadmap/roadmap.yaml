@@ -317,7 +317,7 @@ phases:
 
   - id: "M2"
     name: "JavaScript Compatibility — Level 2"
-    status: "in-progress"   # M2-T01..T08 done (value model, objects, closures, classes, coercion, exceptions, promises, generators); modules & the rest remain
+    status: "in-progress"   # M2-T01..T09 done (value model, objects, closures, classes, coercion, exceptions, promises, generators, modules); T09b init order, destructuring, symbols, regexp, GC, TS hints, test262 remain
     window: { start_week: 12, end_week: 20 }
     color: "#fbbf24"
     blurb: "Full ECMAScript semantics in the compatibility engine: closures, classes, prototypes, coercion, exceptions, promises, generators, modules — the layer that makes arbitrary React code actually run."
@@ -355,7 +355,11 @@ phases:
         priority: "P1"
         done: true
       - id: "M2-T09"
-        title: "Modules — import/export/dynamic import + initialization order"
+        title: "Modules — import/export/dynamic import"
+        priority: "P0"
+        done: true
+      - id: "M2-T09b"
+        title: "Module initialization order (top-level statements, TDZ, side-effect ordering)"
         priority: "P0"
         done: false
       - id: "M2-T10"
