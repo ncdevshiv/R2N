@@ -1374,3 +1374,98 @@ scope level the language needed anyway (T09 modules will extend it).
 **CHOSE**
 Segment reuse + chained global env. 13 tests; suite 238; records (M2
 8/15, 62/106).
+
+## 2026-09-03 — Entry 31: M2-T09 Modules — import/export/dynamic import
+
+**PLAN**
+Modules closed the last P0 scope gap in the language surface: real
+programs are multi-file, so the compiler must assemble an entry source
+plus every transitively imported module into ONE RuntimeTemplate, with
+cross-module component references resolving to global table indices and
+dynamic `import("path")` reaching modules that no static import pulls
+in. The code landed on 2026-09-01 as four direct commits on main
+(ddc5443 linker, 640dc96 ComponentRefVal render, fe805d4 local-value JSX
+tag, 547daea namespace-member JSX tag) — bypassing the PR + records
+workflow; this entry and the record sync close that process gap.
+
+**WHAT**
+- Parser (both twins): `import { a, b as c } from "p"` / `import Def
+  from "p"` / `import * as ns from "p"` / side-effect `import "p"` and
+  the default+named / default+namespace combinations; `export default
+  Name;` / `export { a, b as c };`; dynamic `import("path")` as an
+  expression. Modules parse WITHOUT requiring `export default` — only
+  the entry must declare a root (verified at link time).
+- Linker (`crates/r2n-compiler/src/link.rs`): `ModuleResolver` trait —
+  FsResolver (relative to importer, `.r2n` default, lexically normalized
+  ids so Windows `\\?\` never leaks) and MemResolver (tests/hosts); DFS
+  graph discovery with cycle detection (precise `import cycle: a -> b ->
+  a` error); diamond dedup; PRE-order global component table (entry
+  first — deterministic artifacts); export surfaces built from explicit
+  exports only (components, classes, generator decls); unknown export
+  and no-default-entry are precise link errors; dynamic-import
+  discovery walks the FULL AST (component/class/generator bodies, JSX
+  children and props, nested expressions) so a dynamically-only-
+  reachable module is still linked, and every dynamic specifier is
+  canonicalized to its resolved id so the runtime's `@module:{id}` key
+  matches; dev/prod StrictMode strip runs over the merged tree.
+- IR/runtime: `ModuleIr` carries each module's export surface in the
+  artifact; `Runtime::new` binds `@module:{id}` namespace Maps in the
+  global env; `import("widget")` lowers to the reserved namespace key so
+  it resolves to the SAME canonical namespace as a static import;
+  `ComponentRefVal` renders in value/children position as a component
+  mount, and a component value in TAG position renders as a JSX tag —
+  local binding, prop-passed, or namespace member `<m.Widget/>` — with
+  props and children flowing through.
+- Honest boundaries documented in code: generator/function value
+  imports are deferred (importing a non-component export binds nothing
+  rather than mis-lowering `<Name/>` to a component index); static
+  `import * as ns` member JSX is deferred (the namespace object is
+  reachable via the dynamic-import path); module-level initialization
+  order (top-level statements, TDZ) is NOT implemented — the dialect
+  has no top-level statements, so the gap is latent.
+- Tests: 19 (compiler/tests/link.rs 9 — cycle, unknown export,
+  no-default, alias, default import, dynamic discovery,
+  canonicalization, diamond dedup, cross-module render;
+  runtime/tests/modules.rs 10 — imported component render,
+  dynamic-import namespace, dynamic-only module, ComponentRefVal in
+  binding/prop/namespace positions, JSX tag with props/children).
+- Records: the original task read "Modules — import/export/dynamic
+  import + initialization order". Marking that single box done would
+  claim work that does not exist; deferring the box would leave 19
+  green tests unaccounted. SPLIT: T09 done (import/export/dynamic
+  import), NEW T09b open (module initialization order, TDZ) — total
+  tasks 106 → 107, M2 15 → 16. tmp_t09_a.py (leftover patch script,
+  edits already applied) deleted. NOTE: the split used a `T09b` SUFFIX
+  rather than renumbering T10..T15 → T11..T16, because Entry 24
+  references "the GC task (M2-T13)" and historical journal prose should
+  not be rewritten; the audit script matches tasks by order, not id
+  format, so a suffixed id passes all nine checks.
+
+**WHY**
+"A milestone is complete only when its acceptance tests pass — never
+because an API exists" cuts both ways: the import/export/dynamic-import
+scope IS acceptance-tested (19 tests), while initialization order has no
+code AND no syntax to exercise it. The split records exactly that
+boundary instead of blurrying it. The linker is the build-time boundary
+the architecture always planned: the runtime still knows nothing about
+source (architecture guard untouched) — it just receives a bigger flat
+table plus namespace records, which is why multi-module needed zero
+runtime parser knowledge.
+
+**OPTIONS**
+- One T09 box checked with a caveat note: rejected — a done box that
+  includes unbuilt scope violates the completion rule and poisons the
+  per-task contract the audit script enforces.
+- Defer the whole box: rejected — 90% of the task is built, tested, and
+  merged; leaving it unchecked hides real progress.
+- Renumber T10..T15 → T11..T16 (insert T09b numerically): rejected —
+  forces editing historical journal prose (Entry 24's M2-T13 = GC) and
+  buys nothing the audit script needs.
+- Runtime-side lazy loading (dynamic import resolves at first call):
+  rejected for now — deterministic artifact layout requires knowing the
+  full module set at link time; discovery-by-AST-walk gives that, and
+  true laziness can layer on later without changing artifacts.
+
+**CHOSE**
+Linker-in-compiler + namespace-in-runtime; T09/T09b split with T09 done.
+19 tests; suite 257; records (M2 9/16, 63/107).

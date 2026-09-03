@@ -4,13 +4,18 @@
 //!
 //! ```text
 //! program     := decl* EOF
-//! decl        := import | component | export-default
-//! import      := "import" "{" ident ("," ident)* "}" "from" string ";"
+//! decl        := import | component | export-default | export-named
+//! import      := "import" import-clause "from" string ";"
+//!              | "import" string ";"
+//! import-clause := "{" ident ("as" ident)? ("," ident ("as" ident)?)* "}"
+//!              | "*" "as" ident
+//!              | ident ("," ("{" ident ... "}" | "*" "as" ident))?
 //! component   := "component" ident "(" params? ")" "{" stmt* "}"
 //! params      := ident ("," ident)*
 //! stmt        := ("let" | "const") ident "=" expr ";"
 //!              | "return" expr ";"
 //! export      := "export" "default" ident ";"
+//!              | "export" "{" ident ("as" ident)? ("," ident ("as" ident)?)* "}" ";"
 //!
 //! expr        := ternary
 //! ternary     := or ("?" ternary ":" ternary)?
@@ -33,7 +38,9 @@ use crate::error::ParseError;
 use crate::lexer::{Lexer, Token, TokenKind};
 use r2n_ast::expr::{Element, Expr, Prop};
 use r2n_ast::op::{BinOp, UnOp};
-use r2n_ast::program::{ClassComponent, Component, Decl, Import, Method, Program, Stmt};
+use r2n_ast::program::{
+    ClassComponent, Component, Decl, ExportNamed, Import, Method, Program, Stmt,
+};
 
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
@@ -112,6 +119,17 @@ impl<'a> Parser<'a> {
         }
         if program.root.is_none() {
             return Err(self.err("no `export default` component found"));
+        }
+        Ok(program)
+    }
+
+    /// Parse an imported module: declarations without the `export default`
+    /// requirement (only the app's entry module must declare a root
+    /// component; the linker verifies that itself, M2-T09).
+    pub fn parse_module(&mut self) -> Result<Program, ParseError> {
+        let mut program = Program::new();
+        while !self.check(&TokenKind::Eof) {
+            program.decls.push(self.parse_decl()?);
         }
         Ok(program)
     }
@@ -205,39 +223,141 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_import(&mut self) -> Result<Decl, ParseError> {
-        self.expect(TokenKind::Ident("import".to_string()))?;
-        self.expect(TokenKind::LeftBrace)?;
-        let mut names = Vec::new();
-        if !self.check(&TokenKind::RightBrace) {
-            names.push(self.expect_ident()?);
-            while self.check(&TokenKind::Comma) {
+        self.advance()?; // `import`
+        let mut import = Import {
+            default_: None,
+            named: Vec::new(),
+            namespace: None,
+            path: String::new(),
+        };
+        match &self.current.kind {
+            // `import "path";` — side-effect only.
+            TokenKind::String(_) => {
+                import.path = self.expect_string()?;
+            }
+            // `import { a, b as c } from "path";`
+            TokenKind::LeftBrace => {
                 self.advance()?;
-                names.push(self.expect_ident()?);
+                self.parse_named_imports(&mut import.named)?;
+                self.expect_from()?;
+                import.path = self.expect_string()?;
+            }
+            // `import * as ns from "path";`
+            TokenKind::Star => {
+                self.advance()?;
+                self.expect_keyword("as")?;
+                import.namespace = Some(self.expect_ident()?);
+                self.expect_from()?;
+                import.path = self.expect_string()?;
+            }
+            // `import Def from "path";` — optionally combined with a named or
+            // namespace clause: `import Def, { a } from ...` or
+            // `import Def, * as ns from ...`.
+            _ => {
+                import.default_ = Some(self.expect_ident()?);
+                if self.check(&TokenKind::Comma) {
+                    self.advance()?;
+                    match &self.current.kind {
+                        TokenKind::LeftBrace => {
+                            self.advance()?;
+                            self.parse_named_imports(&mut import.named)?;
+                        }
+                        TokenKind::Star => {
+                            self.advance()?;
+                            self.expect_keyword("as")?;
+                            import.namespace = Some(self.expect_ident()?);
+                        }
+                        _ => return Err(self.err("expected `{` or `*` after `,`")),
+                    }
+                }
+                self.expect_from()?;
+                import.path = self.expect_string()?;
             }
         }
-        self.expect(TokenKind::RightBrace)?;
-        if !matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "from") {
-            return Err(self.err("expected `from` after import names"));
-        }
-        self.advance()?;
-        let path = match &self.current.kind {
-            TokenKind::String(s) => s.clone(),
-            _ => return Err(self.err("expected module path string")),
-        };
-        self.advance()?;
         self.expect(TokenKind::Semicolon)?;
-        Ok(Decl::Import(Import { names, path }))
+        Ok(Decl::Import(import))
+    }
+
+    /// `{ a, b as c }` — named import bindings as `(imported, local)` pairs.
+    /// The opening `{` must already be consumed; consumes the closing `}`.
+    fn parse_named_imports(&mut self, out: &mut Vec<(String, String)>) -> Result<(), ParseError> {
+        while !self.check(&TokenKind::RightBrace) {
+            let imported = self.expect_ident()?;
+            let local = if matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "as") {
+                self.advance()?;
+                self.expect_ident()?
+            } else {
+                imported.clone()
+            };
+            out.push((imported, local));
+            if self.check(&TokenKind::Comma) {
+                self.advance()?;
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenKind::RightBrace)
+    }
+
+    fn expect_keyword(&mut self, kw: &str) -> Result<(), ParseError> {
+        if matches!(&self.current.kind, TokenKind::Ident(k) if k == kw) {
+            self.advance()?;
+            Ok(())
+        } else {
+            Err(self.err(&format!("expected `{kw}`")))
+        }
+    }
+
+    fn expect_from(&mut self) -> Result<(), ParseError> {
+        self.expect_keyword("from")
+    }
+
+    fn expect_string(&mut self) -> Result<String, ParseError> {
+        if let TokenKind::String(s) = &self.current.kind {
+            let s = s.clone();
+            self.advance()?;
+            Ok(s)
+        } else {
+            Err(self.err("expected a module specifier string"))
+        }
     }
 
     fn parse_export(&mut self) -> Result<Decl, ParseError> {
-        self.expect(TokenKind::Ident("export".to_string()))?;
-        if !matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "default") {
-            return Err(self.err("only `export default` is supported"));
+        self.advance()?; // `export`
+        match &self.current.kind {
+            TokenKind::Ident(kw) if kw == "default" => {
+                self.advance()?;
+                let name = self.expect_ident()?;
+                self.expect(TokenKind::Semicolon)?;
+                Ok(Decl::ExportDefault(name))
+            }
+            // `export { a, b as c };` — named exports of module-level
+            // declarations (components, classes, generator fns), M2-T09.
+            TokenKind::LeftBrace => {
+                self.advance()?;
+                let mut names = Vec::new();
+                while !self.check(&TokenKind::RightBrace) {
+                    let local = self.expect_ident()?;
+                    let exported = if matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "as")
+                    {
+                        self.advance()?;
+                        self.expect_ident()?
+                    } else {
+                        local.clone()
+                    };
+                    names.push((local, exported));
+                    if self.check(&TokenKind::Comma) {
+                        self.advance()?;
+                    } else {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RightBrace)?;
+                self.expect(TokenKind::Semicolon)?;
+                Ok(Decl::ExportNamed(ExportNamed { names }))
+            }
+            _ => Err(self.err("expected `default` or `{` after `export`")),
         }
-        self.advance()?;
-        let name = self.expect_ident()?;
-        self.expect(TokenKind::Semicolon)?;
-        Ok(Decl::ExportDefault(name))
     }
 
     /// `function* name(params) { stmts }` — a top-level generator (M2-T08).
@@ -741,6 +861,36 @@ impl<'a> Parser<'a> {
                     else_: Box::new(else_),
                 })
             }
+            TokenKind::Ident(name) if name == "import" => {
+                // `import("path")` — dynamic import (M2-T09). Lookahead: the
+                // lexer (Copy) is positioned to emit the token after `import`;
+                // dynamic import is recognized only when that token is `(`.
+                // A bare `import` in expression position stays an identifier.
+                let mut l = self.lexer;
+                let is_call = matches!(l.next_token(), Ok(tok)
+                    if matches!(tok.kind, TokenKind::LeftParen));
+                if is_call {
+                    self.advance()?; // `import`
+                    self.expect(TokenKind::LeftParen)?;
+                    let specifier = match &self.current.kind {
+                        TokenKind::String(s) => s.clone(),
+                        _ => {
+                            return Err(
+                                self.err("dynamic import specifier must be a string literal")
+                            )
+                        }
+                    };
+                    self.advance()?;
+                    self.expect(TokenKind::RightParen)?;
+                    Ok(Expr::DynImport { specifier })
+                } else {
+                    self.advance()?;
+                    Ok(Expr::Ident {
+                        name: "import".to_string(),
+                        is_component: false,
+                    })
+                }
+            }
             TokenKind::Ident(name) => {
                 let n = name.clone();
                 self.advance()?;
@@ -1004,7 +1154,12 @@ impl<'a> Parser<'a> {
             let member = self.expect_ident()?;
             tag = format!("{tag}.{member}");
         }
-        let is_component = !is_fragment && Self::is_component_name(&tag);
+        // A dotted tag (`<ns.X/>`, `<Ctx.Provider>`) is always a member-access
+        // element (a JSX "component" form), never a host element — regardless of
+        // the base's case. React treats any dotted tag as an expression that
+        // evaluates to an element type, so only a plain lowercase identifier is
+        // a host element.
+        let is_component = !is_fragment && (Self::is_component_name(&tag) || tag.contains('.'));
         let mut props = Vec::new();
         // attributes until "/>" or ">"
         loop {

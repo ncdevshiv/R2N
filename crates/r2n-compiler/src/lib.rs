@@ -6,6 +6,9 @@
 //! serialized (e.g. JSON) and handed to any conformant runtime — the literal
 //! "language-independent artifact" the architecture promises.
 
+mod link;
+
+pub use link::{link_source, link_source_dev, FsResolver, LinkError, MemResolver, ModuleResolver};
 use r2n_ir::runtime::RuntimeTemplate;
 use r2n_ir::{lower, LowerError};
 use r2n_parser::ParseError;

@@ -26,10 +26,10 @@ source (.r2n)  →  Lexer  →  Parser (AST)  →  Lowering  →  JS IR ─┐
 | M0.2 Reactive runtime loop | **DONE** | 14/14 |
 | M0.3 Compiler frontend (JS/JSX → IR) | **DONE** | 9/9 |
 | M1 React compatibility — hooks, keys, context, effects | **DONE** | 18/18 |
-| M2 JavaScript compatibility — full ECMAScript semantics | in progress | 4/15 |
+| M2 JavaScript compatibility — full ECMAScript semantics | in progress | 9/16 |
 | M3–M7 | planned | — |
 
-**Overall: 62/106 roadmap tasks.** Every claim above is backed by the test suite (`cargo test`) and the architecture-guard tests. See [roadmap/CHECKLIST.md](roadmap/CHECKLIST.md) for the task-level record, [JOURNAL.md](JOURNAL.md) for decision history, and [docs/AUDIT.md](docs/AUDIT.md) for the latest audit report.
+**Overall: 63/107 roadmap tasks.** Every claim above is backed by the test suite (`cargo test`) and the architecture-guard tests. See [roadmap/CHECKLIST.md](roadmap/CHECKLIST.md) for the task-level record, [JOURNAL.md](JOURNAL.md) for decision history, and [docs/AUDIT.md](docs/AUDIT.md) for the latest audit report.
 
 ### What works today (all test-verified)
 
@@ -54,7 +54,7 @@ Everything in M2–M7: the remainder of full ECMAScript semantics (objects/proto
 
 ```bash
 cargo build --workspace
-cargo test --workspace          # 186 tests incl. architecture + acceptance guards
+cargo test --workspace          # 257 tests incl. architecture + acceptance guards
 cargo clippy --workspace --all-targets -- -D warnings
 scripts/verify-audit-claims.sh  # re-derives every README/roadmap claim from source
 ```

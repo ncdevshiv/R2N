@@ -27,6 +27,16 @@ pub enum ReactNode {
         component: ComponentRef,
         props: Vec<(String, JsExpr)>,
     },
+    /// A component whose identity is a runtime *value* rather than a static
+    /// table id: `<C>` where `C` is a local `let`/`const`/param bound to a
+    /// component reference value (e.g. `const C = m.Widget; return <C/>;`, or a
+    /// component passed as a prop and rendered as `<P/>`). The engine evaluates
+    /// `component` at render time in the owning scope; it must resolve to a
+    /// `Value::ComponentRefVal`.
+    ComponentExpr {
+        component: JsExpr,
+        props: Vec<(String, JsExpr)>,
+    },
     /// Conditional render: `cond ? a : b`. Lowered from `Expr::Ternary` when
     /// both branches are renderable nodes. The runtime chooses one.
     If {

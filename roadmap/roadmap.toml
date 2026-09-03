@@ -467,7 +467,7 @@ done = true
 id = "M2-T02"
 title = "Objects — dynamic properties, prototypes, shape-friendly layout"
 priority = "P0"
-done = false
+done = true
 
 [[phases.tasks]]
 id = "M2-T03"
@@ -507,7 +507,13 @@ done = true
 
 [[phases.tasks]]
 id = "M2-T09"
-title = "Modules — import/export/dynamic import + initialization order"
+title = "Modules — import/export/dynamic import"
+priority = "P0"
+done = true
+
+[[phases.tasks]]
+id = "M2-T09b"
+title = "Module initialization order (top-level statements, TDZ, side-effect ordering)"
 priority = "P0"
 done = false
 

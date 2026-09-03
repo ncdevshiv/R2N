@@ -3,10 +3,54 @@
 All notable changes. The format is based on Keep a Changelog, and releases
 correspond to git tags that must point at a green CI commit on main.
 
+## Unreleased
+
+### Added
+
+- Multi-module linking (M2-T09): `link_source` / `link_source_dev` flatten an
+  entry source and every module it reaches into ONE global `RuntimeTemplate`,
+  resolving cross-module `import`/`export` bindings to global component indices;
+  `import("path")` binds a module namespace as a `ComponentRefVal` record.
+- Dynamic-import discovery + canonicalization (M2-T09): the linker walks the AST
+  for `import("path")`, so a module reachable ONLY dynamically is still linked,
+  laid out, and bound as a namespace; its specifier is rewritten to the resolved
+  canonical module id so the `@module:{id}` key matches where the runtime binds it.
+- `FsResolver` / `MemResolver` normalize relative specifiers (`./`, `..`) so
+  relative dynamic imports resolve deterministically.
+- Component-as-value rendering (M2-T09): a `ComponentRefVal` in value/children
+  position (e.g. `{ns.Widget}`, or `const C = ns.Widget; {C}`) now MOUNTS the
+  referenced component instead of printing the placeholder `<component#N>` handle
+  — the runtime re-dispatches to a real component mount, so the caller needs no
+  static import.
+- Dynamic-component JSX tag (M2-T09): a component value in TAG position
+  (`<C/>`, `<C prop=...>child</C>`) where `C` is a local `let`/`const`/param
+  resolves at RENDER time — the lowerer emits a `ReactNode::ComponentExpr` and the
+  engine mounts the referenced component with props and children. This lets a
+  component be passed as a value (prop, namespace member, or local) and rendered
+  as a JSX tag without any static binding.
+- Namespace-member JSX tag (M2-T09): `<ns.X/>` where `ns` is a local bound to a
+  module namespace (or a namespace object passed as a prop) resolves the member
+  at RENDER time — the lowerer emits a `ReactNode::ComponentExpr` for the member
+  access (`m.Widget`) and the engine mounts the referenced component. A dotted
+  JSX tag is now always treated as a component form (never a host element), so
+  `<m.Widget/>` works like the equivalent `<C/>` when a namespace is in scope.
+
+### Tests
+
+- 3 new tests (2 linker, 1 runtime) for dynamic-import discovery and specifier
+  canonicalization.
+- 3 new runtime tests for the dynamic-component JSX tag (a local value as a bare
+  `<C/>` tag, a tag with props+children, and a component passed as a prop then
+  rendered as `<P/>`).
+- 3 new runtime tests for the namespace-member JSX tag (`<m.Widget/>` bare, with
+  props+children, and a namespace object passed as a prop then rendered as
+  `<P.Widget/>`). Suite is now 257 green, clippy clean.
+
+
 ## v0.1.0 — 2026-08-30
 
 First audited public checkpoint. Every claim below is enforced by the test
-suite (30 tests) and the CI pipeline (fmt, clippy `-D warnings`, tests,
+suite (254 tests) and the CI pipeline (fmt, clippy `-D warnings`, tests,
 audit-claim verification, dependency-boundary check).
 
 ### Added

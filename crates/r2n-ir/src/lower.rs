@@ -64,6 +64,55 @@ pub fn lower_dev(program: &Program) -> Result<RuntimeTemplate, LowerError> {
     lower_with(program, true)
 }
 
+/// Module-aware lowering (M2-T09): lower a single module's declarations into
+/// runtime IR, resolving every component reference (own declarations AND
+/// imported bindings) through `names` — a map of referenceable name -> GLOBAL
+/// component index. The linker builds `names` per module so cross-module
+/// imports (static `import`, and the `export default` / `export {}` surfaces)
+/// resolve to the target's global index.
+///
+/// Returns the module's components keyed by their global index (the linker
+/// pre-assigns contiguous indices per module, so there are no gaps), its
+/// generator functions, and the `export default` name if present. StrictMode
+/// stripping is deliberately NOT performed here: the linker strips the merged
+/// artifact once, from the entry build's mode.
+pub type LoweredModuleParts = (
+    Vec<(usize, RuntimeComponent)>,
+    Vec<crate::runtime::GeneratorIr>,
+    Option<String>,
+);
+
+pub fn lower_module_parts(
+    program: &Program,
+    names: &HashMap<String, usize>,
+) -> Result<LoweredModuleParts, LowerError> {
+    let mut parts = Vec::new();
+    let mut generators = Vec::new();
+    let mut default = None;
+    for decl in &program.decls {
+        match decl {
+            Decl::Component(c) => {
+                let idx = names
+                    .get(&c.name)
+                    .copied()
+                    .ok_or_else(|| LowerError::UnknownComponent(c.name.clone()))?;
+                parts.push((idx, lower_component(c, names)?));
+            }
+            Decl::Class(c) => {
+                let idx = names
+                    .get(&c.name)
+                    .copied()
+                    .ok_or_else(|| LowerError::UnknownComponent(c.name.clone()))?;
+                parts.push((idx, lower_class(c, names)?));
+            }
+            Decl::GeneratorFn(g) => generators.push(lower_generator_fn(g, names)?),
+            Decl::ExportDefault(name) => default = Some(name.clone()),
+            Decl::Import(_) | Decl::ExportNamed(_) => {}
+        }
+    }
+    Ok((parts, generators, default))
+}
+
 fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, LowerError> {
     // 1. Build the component name -> index table.
     let mut index: HashMap<String, usize> = HashMap::new();
@@ -73,7 +122,10 @@ fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, L
         let name = match decl {
             Decl::Component(c) => c.name.clone(),
             Decl::Class(c) => c.name.clone(),
-            Decl::Import(_) | Decl::ExportDefault(_) | Decl::GeneratorFn(_) => continue,
+            Decl::Import(_)
+            | Decl::ExportDefault(_)
+            | Decl::ExportNamed(_)
+            | Decl::GeneratorFn(_) => continue,
         };
         index.insert(name.clone(), components.len());
         components.push(RuntimeComponent {
@@ -114,6 +166,7 @@ fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, L
         components,
         root,
         generators,
+        modules: Vec::new(),
         manifest: RuntimeTemplate::new().manifest,
         strict_mode: false,
     };
@@ -208,6 +261,20 @@ fn lower_component(
         bindings: Vec::new(),
         body: ReactNode::Text(JsExpr::Lit(r2n_ast::lit::Literal::Null)),
     };
+    // Local names in scope for JSX tag resolution: params plus every `let`/
+    // `const` declared in the body. Alongside `index`, these let the lowerer
+    // decide whether an uppercase `<C/>` is a static component (`index`), a
+    // local component VALUE (`locals` → `ReactNode::ComponentExpr`), or
+    // genuinely undefined (`UnknownComponent`).
+    let locals: std::collections::HashSet<String> = c
+        .params
+        .iter()
+        .cloned()
+        .chain(c.body.iter().filter_map(|s| match s {
+            Stmt::Let { name, .. } | Stmt::Const { name, .. } => Some(name.clone()),
+            _ => None,
+        }))
+        .collect();
     for stmt in &c.body {
         match stmt {
             Stmt::Let { name, value } | Stmt::Const { name, value } => {
@@ -219,7 +286,7 @@ fn lower_component(
                 .bindings
                 .push(("$stmt".to_string(), lower_expr(e, index)?)),
             Stmt::Return(expr) => {
-                out.body = lower_renderable(expr, index)?;
+                out.body = lower_renderable(expr, index, &locals)?;
             }
         }
     }
@@ -227,6 +294,7 @@ fn lower_component(
         out.body,
         ReactNode::Host { .. }
             | ReactNode::Component { .. }
+            | ReactNode::ComponentExpr { .. }
             | ReactNode::If { .. }
             | ReactNode::List { .. }
             | ReactNode::Fragment { .. }
@@ -319,6 +387,17 @@ fn lower_class(
         bindings: Vec::new(),
         body: ReactNode::Text(JsExpr::Lit(r2n_ast::lit::Literal::Null)),
     };
+    // `render()` locals for JSX tag resolution (class bodies have no params).
+    let locals: std::collections::HashSet<String> = c
+        .methods
+        .iter()
+        .filter(|m| m.name == "render")
+        .flat_map(|m| m.body.iter())
+        .filter_map(|st| match st {
+            Stmt::Let { name, .. } | Stmt::Const { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
     for m in &c.methods {
         if m.name == "render" {
             for st in &m.body {
@@ -329,7 +408,7 @@ fn lower_class(
                     Stmt::Const { name, value } => {
                         out.bindings.push((name.clone(), lower_expr(value, index)?))
                     }
-                    Stmt::Return(expr) => out.body = lower_renderable(expr, index)?,
+                    Stmt::Return(expr) => out.body = lower_renderable(expr, index, &locals)?,
                     Stmt::Expr(e) => out
                         .bindings
                         .push(("$stmt".to_string(), lower_expr(e, index)?)),
@@ -342,6 +421,7 @@ fn lower_class(
         out.body,
         ReactNode::Host { .. }
             | ReactNode::Component { .. }
+            | ReactNode::ComponentExpr { .. }
             | ReactNode::If { .. }
             | ReactNode::List { .. }
             | ReactNode::Fragment { .. }
@@ -546,6 +626,12 @@ fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, Low
                 })
                 .transpose()?,
         },
+        // `import("path")` — dynamic import (M2-T09): lowers to the reserved
+        // `@module:` variable, which the runtime evaluates to the module's
+        // namespace record. The specifier is a compile-time string literal, so
+        // the reserved name is deterministic; the linker (M2-T09) maps it to
+        // the module's table index `N` when assembling the program.
+        Expr::DynImport { specifier } => JsExpr::Var(format!("@module:{specifier}")),
         Expr::Element(_) => {
             return Err(LowerError::InvalidListMap(
                 "element used as a value".to_string(),
@@ -754,13 +840,17 @@ fn lower_unop(op: UnOp) -> JsUnOp {
 
 /// Lower an expression that appears in a *render* position into a React node.
 /// This is where JSX becomes the React IR and components become `ComponentRef`s.
-fn lower_renderable(expr: &Expr, index: &HashMap<String, usize>) -> Result<ReactNode, LowerError> {
+fn lower_renderable(
+    expr: &Expr,
+    index: &HashMap<String, usize>,
+    locals: &std::collections::HashSet<String>,
+) -> Result<ReactNode, LowerError> {
     match expr {
-        Expr::Element(e) => lower_element(e, index),
+        Expr::Element(e) => lower_element(e, index, locals),
         Expr::Ternary { cond, then, else_ } => Ok(ReactNode::If {
             cond: lower_expr(cond, index)?,
-            then: Box::new(lower_renderable(then, index)?),
-            else_: Box::new(lower_renderable(else_, index)?),
+            then: Box::new(lower_renderable(then, index, locals)?),
+            else_: Box::new(lower_renderable(else_, index, locals)?),
         }),
         // The `children` prop in render position: splice point for the
         // parent's passed-in children (React children composition).
@@ -773,7 +863,11 @@ fn lower_renderable(expr: &Expr, index: &HashMap<String, usize>) -> Result<React
     }
 }
 
-fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNode, LowerError> {
+fn lower_element(
+    e: &Element,
+    index: &HashMap<String, usize>,
+    locals: &std::collections::HashSet<String>,
+) -> Result<ReactNode, LowerError> {
     // Fragment shorthand `<>...</>` (parsed as an Element with an empty tag):
     // a group of children with no host element of its own. React fragments
     // accept only a `key`; any other attribute is an error, not a silent drop.
@@ -791,7 +885,7 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
         }
         let mut children = Vec::with_capacity(e.children.len());
         for child in &e.children {
-            children.push(lower_child(child, index)?);
+            children.push(lower_child(child, index, locals)?);
         }
         return Ok(ReactNode::Fragment { key, children });
     }
@@ -801,7 +895,7 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
         let children = e
             .children
             .iter()
-            .map(|c| lower_child(c, index))
+            .map(|c| lower_child(c, index, locals))
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(ReactNode::StrictMode { children });
     }
@@ -813,7 +907,7 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
         for p in &e.props {
             if p.name == "fallback" {
                 match &p.value {
-                    Some(v) => fallback = Some(Box::new(lower_renderable(v, index)?)),
+                    Some(v) => fallback = Some(Box::new(lower_renderable(v, index, locals)?)),
                     None => {
                         return Err(LowerError::NonRenderableReturn(
                             "Suspense fallback must be an element".to_string(),
@@ -828,7 +922,7 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
         let children = e
             .children
             .iter()
-            .map(|c| lower_child(c, index))
+            .map(|c| lower_child(c, index, locals))
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(ReactNode::Suspense {
             fallback: fb,
@@ -859,7 +953,7 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
         let children = e
             .children
             .iter()
-            .map(|c| lower_child(c, index))
+            .map(|c| lower_child(c, index, locals))
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(ReactNode::Portal { target, children });
     }
@@ -881,7 +975,7 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
             let children = e
                 .children
                 .iter()
-                .map(|c| lower_child(c, index))
+                .map(|c| lower_child(c, index, locals))
                 .collect::<Result<Vec<_>, _>>()?;
             return Ok(ReactNode::ContextProvider {
                 ctx,
@@ -893,9 +987,6 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
 
     // Component element? (uppercase tag)
     if e.is_component {
-        let comp_idx = *index
-            .get(&e.tag)
-            .ok_or_else(|| LowerError::UnknownComponent(e.tag.clone()))?;
         let mut props = lower_props(&e.props, index)?;
         // React children composition: JSX children of a component element
         // become its `children` prop. They are lowered NOW, in the parent's
@@ -904,14 +995,51 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
         if !e.children.is_empty() {
             let mut children = Vec::with_capacity(e.children.len());
             for child in &e.children {
-                children.push(lower_child(child, index)?);
+                children.push(lower_child(child, index, locals)?);
             }
             props.push(("children".to_string(), JsExpr::Children(children)));
         }
-        return Ok(ReactNode::Component {
-            component: ComponentRef(comp_idx),
-            props,
-        });
+        // `<ns.X/>` — a member-access component tag. The base must be a LOCAL
+        // (param/let/const) bound to a module namespace or component holder;
+        // the member is resolved at RENDER time off that value (e.g.
+        // `const ns = import("widget"); return <ns.Widget/>;`, or a namespace
+        // object passed as a prop and rendered `<P.Widget/>`). A dotted tag is
+        // never a static table entry, so it lowers to a `ReactNode::ComponentExpr`
+        // whose component is a member access evaluated in the parent scope.
+        if let Some((base, member)) = e.tag.rsplit_once('.') {
+            return if !base.is_empty() && locals.contains(base) {
+                Ok(ReactNode::ComponentExpr {
+                    component: JsExpr::Get {
+                        base: Box::new(JsExpr::Var(base.to_string())),
+                        prop: member.to_string(),
+                    },
+                    props,
+                })
+            } else {
+                Err(LowerError::UnknownComponent(e.tag.clone()))
+            };
+        }
+        // Static component: an uppercase tag naming a component in `index`
+        // (own declarations and imported bindings) — a fixed table id, so it
+        // lowers once at build time to a `ReactNode::Component`.
+        if let Some(&comp_idx) = index.get(&e.tag) {
+            return Ok(ReactNode::Component {
+                component: ComponentRef(comp_idx),
+                props,
+            });
+        }
+        // `<C>` where `C` is a LOCAL value (a `let`/`const`/param) bound to a
+        // component reference (e.g. `const C = m.Widget; return <C/>;`, or a
+        // component passed as a prop and rendered as `<P/>`). The identity is a
+        // RUNTIME value, so it cannot be a static table id: emit a
+        // `ReactNode::ComponentExpr` the engine resolves against the scope.
+        if locals.contains(&e.tag) {
+            return Ok(ReactNode::ComponentExpr {
+                component: JsExpr::Var(e.tag.clone()),
+                props,
+            });
+        }
+        return Err(LowerError::UnknownComponent(e.tag.clone()));
     }
 
     // Host element. Detect the special `children.map(...)` list form: when the
@@ -919,7 +1047,7 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
     // as a keyed `ReactNode::List` nested inside the host's children (the
     // runtime flattens it into the host's child list at render time).
     if e.children.len() == 1 {
-        if let Some(list) = try_lower_list(&e.children[0], index)? {
+        if let Some(list) = try_lower_list(&e.children[0], index, locals)? {
             let props = lower_props(&e.props, index)?;
             return Ok(ReactNode::Host {
                 tag: e.tag.clone(),
@@ -932,7 +1060,7 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
     let props = lower_props(&e.props, index)?;
     let mut children = Vec::with_capacity(e.children.len());
     for child in &e.children {
-        children.push(lower_child(child, index)?);
+        children.push(lower_child(child, index, locals)?);
     }
     Ok(ReactNode::Host {
         tag: e.tag.clone(),
@@ -942,10 +1070,14 @@ fn lower_element(e: &Element, index: &HashMap<String, usize>) -> Result<ReactNod
 }
 
 /// Lower a child expression node (text/element/conditional/list).
-fn lower_child(child: &Expr, index: &HashMap<String, usize>) -> Result<ReactNode, LowerError> {
+fn lower_child(
+    child: &Expr,
+    index: &HashMap<String, usize>,
+    locals: &std::collections::HashSet<String>,
+) -> Result<ReactNode, LowerError> {
     match child {
-        Expr::Element(_) => lower_renderable(child, index),
-        Expr::Ternary { .. } => lower_renderable(child, index),
+        Expr::Element(_) => lower_renderable(child, index, locals),
+        Expr::Ternary { .. } => lower_renderable(child, index, locals),
         // `children` as a host element's child: the splice point.
         Expr::Ident {
             name,
@@ -953,7 +1085,7 @@ fn lower_child(child: &Expr, index: &HashMap<String, usize>) -> Result<ReactNode
         } if name == "children" => Ok(ReactNode::Children),
         Expr::Call { .. } => {
             // possible `items.map(x => <li/>)` directly as a child
-            if let Some(list) = try_lower_list(child, index)? {
+            if let Some(list) = try_lower_list(child, index, locals)? {
                 Ok(list)
             } else {
                 // Any other call (`useContext(Ctx)`, `arr[i]`, ...) is a
@@ -962,7 +1094,9 @@ fn lower_child(child: &Expr, index: &HashMap<String, usize>) -> Result<ReactNode
             }
         }
         // `{cond && <el/>}` / `{cond || <el/>}`: short-circuit rendering.
-        Expr::Binary { .. } if is_short_circuit_render(child) => lower_short_circuit(child, index),
+        Expr::Binary { .. } if is_short_circuit_render(child) => {
+            lower_short_circuit(child, index, locals)
+        }
         // A `{expr}` child renders as text.
         other => Ok(ReactNode::Text(lower_expr(other, index)?)),
     }
@@ -993,6 +1127,7 @@ fn is_renderable_expr(expr: &Expr) -> bool {
 fn lower_short_circuit(
     expr: &Expr,
     index: &HashMap<String, usize>,
+    locals: &std::collections::HashSet<String>,
 ) -> Result<ReactNode, LowerError> {
     let (op, left, right) = match expr {
         Expr::Binary { op, left, right } if matches!(op, BinOp::And | BinOp::Or) => {
@@ -1015,7 +1150,7 @@ fn lower_short_circuit(
     } else {
         (left, right)
     };
-    let node = lower_renderable(node_side, index)?;
+    let node = lower_renderable(node_side, index, locals)?;
     Ok(match op {
         BinOp::And => ReactNode::If {
             cond: lower_expr(cond_expr, index)?,
@@ -1036,6 +1171,7 @@ fn lower_short_circuit(
 fn try_lower_list(
     expr: &Expr,
     index: &HashMap<String, usize>,
+    locals: &std::collections::HashSet<String>,
 ) -> Result<Option<ReactNode>, LowerError> {
     // Pattern: Call { callee: Member { base, prop: "map" }, args: [arrow] }
     let (base, arrow) = match expr {
@@ -1051,7 +1187,7 @@ fn try_lower_list(
     };
     // The arrow body must be a JSX element (so each item becomes a node).
     let item = match &**arrow_body {
-        Expr::Element(_) => lower_renderable(arrow_body, index)?,
+        Expr::Element(_) => lower_renderable(arrow_body, index, locals)?,
         _ => return Ok(None),
     };
     // The per-element variable name is the arrow's first parameter.
@@ -1066,7 +1202,9 @@ fn try_lower_list(
     // The key expression: prefer the `key` prop of the item element; otherwise
     // the item value itself.
     let key_expr = match &item {
-        ReactNode::Host { props, .. } | ReactNode::Component { props, .. } => {
+        ReactNode::Host { props, .. }
+        | ReactNode::Component { props, .. }
+        | ReactNode::ComponentExpr { props, .. } => {
             if let Some((_, k)) = props.iter().find(|(n, _)| n == "key") {
                 subst_expr(k.clone(), &item_var, "$item")
             } else {
@@ -1208,6 +1346,13 @@ fn subst_node(n: ReactNode, from: &str, to: &str) -> ReactNode {
         },
         ReactNode::Component { component, props } => ReactNode::Component {
             component,
+            props: props
+                .into_iter()
+                .map(|(k, v)| (k, subst_expr(v, from, to)))
+                .collect(),
+        },
+        ReactNode::ComponentExpr { component, props } => ReactNode::ComponentExpr {
+            component: subst_expr(component, from, to),
             props: props
                 .into_iter()
                 .map(|(k, v)| (k, subst_expr(v, from, to)))
@@ -1395,6 +1540,12 @@ fn collect_free_node(
             }
         }
         ReactNode::Component { props, .. } => {
+            for (_, e) in props {
+                collect_free(e, bound, out);
+            }
+        }
+        ReactNode::ComponentExpr { component, props } => {
+            collect_free(component, bound, out);
             for (_, e) in props {
                 collect_free(e, bound, out);
             }

@@ -163,6 +163,14 @@ pub enum Value {
     /// saved scope at splice time — see engine's `ReactNode::Children`).
     /// Serializable like every other ABI value; no Rust function pointers.
     Children(Vec<r2n_ir::react::ReactNode>),
+    /// A reference to a component in the program's component table (M2-T09).
+    /// Produced when a module namespace exposes a component export. Reading it
+    /// as a value is first-class: rendering it in value/children position mounts
+    /// the referenced component (the engine re-dispatches `ComponentRefVal` to a
+    /// component mount), so the caller needs no static import. Rendering it as a
+    /// JSX tag (`<C/>`) with props remains a further parser/deep-lowerer
+    /// extension.
+    ComponentRefVal(usize),
 }
 
 impl PartialEq for Value {
@@ -219,6 +227,7 @@ impl Value {
             (Dispatcher { slot: a }, Dispatcher { slot: b }) => a == b,
             (Ref { slot: a }, Ref { slot: b }) => a == b,
             (Context { id: a, default: ad }, Context { id: b, default: bd }) => a == b && ad == bd,
+            (ComponentRefVal(a), ComponentRefVal(b)) => a == b,
             (Object(_), Object(_)) => false, // handled by ptr_eq above
             (Promise(_), Promise(_)) => false, // handled by ptr_eq above
             (AsyncFn(_), AsyncFn(_)) => false, // handled by ptr_eq above
@@ -278,6 +287,7 @@ impl Value {
             Value::Context { .. } => true,
             Value::Pending => true,
             Value::Children(_) => true,
+            Value::ComponentRefVal(_) => true,
             // Promises/async fns are objects in ECMA — always truthy.
             Value::Promise(_)
             | Value::AsyncFn(_)
@@ -333,6 +343,7 @@ impl Value {
             Value::Generator(_) => "[object Generator]".to_string(),
             Value::ArrayIter(_) => "[object Array Iterator]".to_string(),
             Value::Settler { .. } => "<settler>".to_string(),
+            Value::ComponentRefVal(idx) => format!("<component#{idx}>"),
         }
     }
 }
