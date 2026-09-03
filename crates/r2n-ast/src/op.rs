@@ -20,6 +20,9 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    Nullish,
+    /// `|` — bitwise OR on ToInt32-coerced operands (ECMA 13.11).
+    BitOr,
 }
 
 impl BinOp {
@@ -41,6 +44,8 @@ impl BinOp {
             BinOp::Ge => ">=",
             BinOp::And => "&&",
             BinOp::Or => "||",
+            BinOp::Nullish => "??",
+            BinOp::BitOr => "|",
         }
     }
 }

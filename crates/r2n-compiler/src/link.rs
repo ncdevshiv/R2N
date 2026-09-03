@@ -14,8 +14,8 @@
 use r2n_ast::expr::Expr;
 use r2n_ast::program::{Decl, Import, Program, Stmt};
 use r2n_ir::react::ReactNode;
-use r2n_ir::runtime::{GeneratorIr, ModuleIr, RuntimeComponent, RuntimeTemplate};
-use r2n_ir::{js::JsExpr, lower_module_parts};
+use r2n_ir::runtime::{FuncIr, GeneratorIr, ModuleIr, RuntimeComponent, RuntimeTemplate};
+use r2n_ir::{component_fn_of, js::JsExpr, lower_module_parts, pattern_names};
 use r2n_parser::Parser;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
@@ -107,17 +107,62 @@ impl FsResolver {
     }
 }
 
+/// True when a module specifier is EXTERNAL (no file to load): a bare
+/// package name (`react`, `classnames`, `react-router-dom`, possibly with a
+/// subpath) or a stylesheet side-effect import (`*.css`). External value
+/// imports (`useState`, `memo`, `classnames`, `useLocation`) resolve at
+/// RUNTIME by builtin name — the linker skips them entirely (no DFS edge,
+/// no export-surface check).
+pub fn is_external_specifier(spec: &str) -> bool {
+    if spec.ends_with(".css") {
+        return true;
+    }
+    // Relative/absolute paths are always internal (probed with extensions).
+    if spec.starts_with('.') || spec.starts_with('/') {
+        return false;
+    }
+    // Windows drive paths (`C:/...`) are internal; everything else bare is a
+    // package name.
+    if spec.len() >= 2 && spec.as_bytes()[1] == b':' {
+        return false;
+    }
+    true
+}
+
 impl ModuleResolver for FsResolver {
     fn resolve(&self, specifier: &str, from_id: &str) -> Result<String, LinkError> {
+        if is_external_specifier(specifier) {
+            return Err(LinkError::Resolve {
+                from: from_id.to_string(),
+                specifier: specifier.to_string(),
+                reason: "external package (no module file; imports resolve as runtime builtins)"
+                    .to_string(),
+            });
+        }
         let base = std::path::Path::new(from_id)
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(self.root.as_path());
-        let mut path = base.join(specifier);
-        if path.extension().is_none() {
-            path.set_extension("r2n");
+        let path = base.join(specifier);
+        // Extension probing: exact path first, then `.r2n` (native), `.js`,
+        // `.jsx` (real-world React sources). First EXISTING file wins, so
+        // `import "./reducer"` finds `reducer.js` and `import "./input"`
+        // finds `input.jsx`.
+        if path.extension().is_some() {
+            return Ok(normalize_path(&path.display().to_string()));
         }
-        Ok(normalize_path(&path.display().to_string()))
+        for ext in ["r2n", "js", "jsx"] {
+            let mut candidate = path.clone();
+            candidate.set_extension(ext);
+            if candidate.exists() {
+                return Ok(normalize_path(&candidate.display().to_string()));
+            }
+        }
+        // Nothing on disk: default to `.r2n` so the load error names the
+        // native expectation (deterministic, debuggable).
+        let mut fallback = path.clone();
+        fallback.set_extension("r2n");
+        Ok(normalize_path(&fallback.display().to_string()))
     }
 
     fn load(&self, id: &str) -> Result<String, LinkError> {
@@ -210,6 +255,10 @@ fn normalize_path(p: &str) -> String {
 enum ExportKind {
     Component,
     Generator,
+    /// A plain `function` value, a `const` binding, or a top-level `let`.
+    /// These live in the module namespace record (runtime global env), not
+    /// in the component table.
+    Value,
 }
 
 /// A resolved export: how it is used and its GLOBAL index (component only).
@@ -280,7 +329,17 @@ fn link_source_mode(
         let mut deps = Vec::new();
         let mut seen: BTreeSet<String> = BTreeSet::new();
         for spec in static_import_specifiers(&program) {
-            let dep = resolver.resolve(&spec, id)?;
+            // External packages and stylesheet side-effects contribute no
+            // module: a resolver reports them as a resolve error, which we
+            // skip here (their names resolve at runtime as builtins, or —
+            // for CSS — not at all). Any OTHER resolve failure propagates.
+            // (A resolver that KNOWS a bare id — MemResolver test fixtures —
+            // returns Ok, so fixture modules still link.)
+            let dep = match resolver.resolve(&spec, id) {
+                Ok(dep) => dep,
+                Err(_) if is_external_specifier(&spec) => continue,
+                Err(e) => return Err(e),
+            };
             if seen.insert(dep.clone()) {
                 deps.push(dep);
             }
@@ -291,7 +350,11 @@ fn link_source_mode(
         let mut dyn_specs = Vec::new();
         for_each_dyn_import_in_program(&mut program, &mut |s| dyn_specs.push(s.clone()));
         for spec in &dyn_specs {
-            let dep = resolver.resolve(spec, id)?;
+            let dep = match resolver.resolve(spec, id) {
+                Ok(dep) => dep,
+                Err(_) if is_external_specifier(spec) => continue,
+                Err(e) => return Err(e),
+            };
             if seen.insert(dep.clone()) {
                 deps.push(dep);
             }
@@ -349,7 +412,11 @@ fn link_source_mode(
     }
 
     // 2. Assign a global component index to every module's own declarations
-    //    (discovery order = deterministic table layout).
+    //    (discovery order = deterministic table layout). `component`/`class`
+    //    decls are components; so is every `export function Name()` (React
+    //    semantics: an exported function returning JSX is a component) and
+    //    every `export const Name = memo(function...)` (same, through the
+    //    memo HOF — semantically identity).
     let mut bases: HashMap<String, usize> = HashMap::new();
     let mut next = 0usize;
     let mut own_name: HashMap<String, HashMap<String, usize>> = HashMap::new();
@@ -365,6 +432,16 @@ fn link_source_mode(
                 }
                 Decl::Class(c) => {
                     local.insert(c.name.clone(), next);
+                    next += 1;
+                }
+                Decl::ExportDecl(r2n_ast::program::ExportDecl::Function(f)) => {
+                    local.insert(f.name.clone(), next);
+                    next += 1;
+                }
+                Decl::ExportDecl(r2n_ast::program::ExportDecl::Const { name, value })
+                    if component_fn_of(value).is_some() =>
+                {
+                    local.insert(name.clone(), next);
                     next += 1;
                 }
                 _ => {}
@@ -415,6 +492,68 @@ fn link_source_mode(
                         },
                     );
                 }
+                Decl::FuncDecl(f) => {
+                    decl_map.insert(
+                        f.name.clone(),
+                        Export {
+                            kind: ExportKind::Value,
+                            index: usize::MAX,
+                        },
+                    );
+                }
+                Decl::TopLevel { pattern, .. } => {
+                    let mut names = Vec::new();
+                    pattern_names(pattern, &mut names);
+                    for name in names {
+                        decl_map.insert(
+                            name,
+                            Export {
+                                kind: ExportKind::Value,
+                                index: usize::MAX,
+                            },
+                        );
+                    }
+                }
+                Decl::ExportDecl(e) => match e {
+                    r2n_ast::program::ExportDecl::Function(f) => {
+                        // Exported functions are COMPONENTS (React semantics):
+                        // the index was pre-assigned in step 2.
+                        let idx = own[&f.name];
+                        decl_map.insert(
+                            f.name.clone(),
+                            Export {
+                                kind: ExportKind::Component,
+                                index: idx,
+                            },
+                        );
+                    }
+                    r2n_ast::program::ExportDecl::Const { name, value } => {
+                        // `export const Name = memo(function...)` is a
+                        // component (through the memo HOF); any other const
+                        // is a module value (global env at runtime).
+                        match own.get(name) {
+                            Some(idx) => {
+                                decl_map.insert(
+                                    name.clone(),
+                                    Export {
+                                        kind: ExportKind::Component,
+                                        index: *idx,
+                                    },
+                                );
+                            }
+                            None => {
+                                debug_assert!(component_fn_of(value).is_none());
+                                decl_map.insert(
+                                    name.clone(),
+                                    Export {
+                                        kind: ExportKind::Value,
+                                        index: usize::MAX,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                },
                 _ => {}
             }
         }
@@ -433,6 +572,18 @@ fn link_source_mode(
                         }
                     }
                 }
+                Decl::ExportDecl(e) => match e {
+                    r2n_ast::program::ExportDecl::Function(f) => {
+                        if let Some(x) = decl_map.get(&f.name) {
+                            map.insert(f.name.clone(), *x);
+                        }
+                    }
+                    r2n_ast::program::ExportDecl::Const { name, .. } => {
+                        if let Some(x) = decl_map.get(name) {
+                            map.insert(name.clone(), *x);
+                        }
+                    }
+                },
                 _ => {}
             }
         }
@@ -443,6 +594,8 @@ fn link_source_mode(
     //    component/class bindings -> global component index.
     let mut components: Vec<Option<RuntimeComponent>> = vec![None; total_components];
     let mut generators: Vec<GeneratorIr> = Vec::new();
+    let mut functions: Vec<FuncIr> = Vec::new();
+    let mut top_levels: Vec<(String, JsExpr)> = Vec::new();
     let mut root_name: Option<String> = None;
     let mut module_irs: Vec<ModuleIr> = Vec::new();
 
@@ -451,22 +604,38 @@ fn link_source_mode(
         let mut names: HashMap<String, usize> = own_name[id].clone();
         for decl in &m.program.decls {
             if let Decl::Import(import) = decl {
+                // External packages resolve at runtime as builtins — no
+                // canonical module, no export-surface check. (Same
+                // resolve-error protocol as discovery: known ids link.)
+                let target = match resolver.resolve(&import.path, &m.id) {
+                    Ok(t) => t,
+                    Err(_) if is_external_specifier(&import.path) => continue,
+                    Err(e) => return Err(e),
+                };
                 // Resolve the raw specifier to its CANONICAL id (the key the
                 // export surface uses), then map each imported binding to the
                 // target's global component index.
-                let target = resolver.resolve(&import.path, &m.id)?;
                 for (local, global) in resolve_import_bindings(&m.id, import, &target, &exports)? {
                     names.insert(local.clone(), global);
                 }
             }
         }
-        let (parts, gens, default) = lower_module_parts(&m.program, &names)?;
+        let (parts, gens, funcs, tls, default) = lower_module_parts(&m.program, &names)?;
         for (idx, comp) in parts {
             components[idx] = Some(comp);
         }
         generators.extend(gens);
+        functions.extend(funcs);
+        top_levels.extend(tls);
         if id == entry_id {
-            let d = default.ok_or_else(|| LinkError::NoDefault(entry_id.to_string()))?;
+            // Entry root: `export default X` when present; otherwise the
+            // entry's SOLE component (the `export function App()` shape real
+            // React apps use — no default export required).
+            let d = match default {
+                Some(d) => Some(d),
+                None => sole_entry_component(&m.program),
+            };
+            let d = d.ok_or_else(|| LinkError::NoDefault(entry_id.to_string()))?;
             root_name = Some(d);
         }
         let mut exps: Vec<(String, usize)> = exports[id]
@@ -495,6 +664,8 @@ fn link_source_mode(
         components,
         root,
         generators,
+        functions,
+        top_levels,
         modules: module_irs,
         manifest: RuntimeTemplate::new().manifest,
         strict_mode: false,
@@ -519,6 +690,39 @@ fn link_source_mode(
 fn parse_module(source: &str) -> Result<Program, LinkError> {
     let mut p = Parser::new(source)?;
     Ok(p.parse_module()?)
+}
+
+/// Sole-entry-component fallback: when the entry module has no
+/// `export default` but declares exactly ONE component-shaped binding
+/// (`component`, `class`, `export function`, or a `memo(function)` const),
+/// that binding is the root (the `export function App()` shape real React
+/// apps use). Zero or several → None (the caller raises NoDefault).
+fn sole_entry_component(program: &Program) -> Option<String> {
+    let mut found: Option<String> = None;
+    let mut consider = |name: &str| {
+        if found.is_none() {
+            found = Some(name.to_string());
+        } else {
+            found = Some(String::new()); // marker: more than one
+        }
+    };
+    for decl in &program.decls {
+        match decl {
+            Decl::Component(c) => consider(&c.name),
+            Decl::Class(c) => consider(&c.name),
+            Decl::ExportDecl(r2n_ast::program::ExportDecl::Function(f)) => consider(&f.name),
+            Decl::ExportDecl(r2n_ast::program::ExportDecl::Const { name, value })
+                if component_fn_of(value).is_some() =>
+            {
+                consider(name)
+            }
+            _ => {}
+        }
+    }
+    match found {
+        Some(n) if !n.is_empty() => Some(n),
+        _ => None,
+    }
 }
 
 /// The canonical ids a program statically imports (its `Decl::Import` paths),
@@ -562,18 +766,79 @@ fn for_each_dyn_import_in_program(program: &mut Program, f: &mut impl FnMut(&mut
                     for_each_dyn_import_in_stmt(stmt, f);
                 }
             }
+            Decl::FuncDecl(fd) => {
+                for stmt in &mut fd.body {
+                    for_each_dyn_import_in_stmt(stmt, f);
+                }
+            }
+            Decl::TopLevel { value, .. } => for_each_dyn_import(value, f),
+            Decl::ExportDecl(e) => match e {
+                r2n_ast::program::ExportDecl::Function(fd) => {
+                    for stmt in &mut fd.body {
+                        for_each_dyn_import_in_stmt(stmt, f);
+                    }
+                }
+                r2n_ast::program::ExportDecl::Const { value, .. } => for_each_dyn_import(value, f),
+            },
             Decl::Import(_) | Decl::ExportDefault(_) | Decl::ExportNamed(_) => {}
         }
     }
 }
 
 fn for_each_dyn_import_in_stmt(stmt: &mut Stmt, f: &mut impl FnMut(&mut String)) {
-    let expr = match stmt {
-        Stmt::Let { value, .. } | Stmt::Const { value, .. } => value,
-        Stmt::Return(e) => e,
-        Stmt::Expr(e) => e,
-    };
-    for_each_dyn_import(expr, f);
+    match stmt {
+        Stmt::Let { value, .. } | Stmt::Const { value, .. } => for_each_dyn_import(value, f),
+        Stmt::Destructure { value, .. } => for_each_dyn_import(value, f),
+        Stmt::Return(e) => for_each_dyn_import(e, f),
+        Stmt::Expr(e) => for_each_dyn_import(e, f),
+        // Control-flow bodies can nest dynamic imports (e.g. lazy import in a
+        // branch); walk them so discovery stays complete.
+        Stmt::If { cond, then, else_ } => {
+            for_each_dyn_import(cond, f);
+            for s in then {
+                for_each_dyn_import_in_stmt(s, f);
+            }
+            if let Some(e) = else_ {
+                for s in e {
+                    for_each_dyn_import_in_stmt(s, f);
+                }
+            }
+        }
+        Stmt::While { cond, body } => {
+            for_each_dyn_import(cond, f);
+            for s in body {
+                for_each_dyn_import_in_stmt(s, f);
+            }
+        }
+        Stmt::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(i) = init {
+                for_each_dyn_import_in_stmt(i, f);
+            }
+            if let Some(c) = cond {
+                for_each_dyn_import(c, f);
+            }
+            if let Some(u) = update {
+                for_each_dyn_import(u, f);
+            }
+            for s in body {
+                for_each_dyn_import_in_stmt(s, f);
+            }
+        }
+        Stmt::Switch { disc, cases } => {
+            for_each_dyn_import(disc, f);
+            for (_, body) in cases {
+                for s in body {
+                    for_each_dyn_import_in_stmt(s, f);
+                }
+            }
+        }
+        Stmt::Break | Stmt::Continue => {}
+    }
 }
 
 fn for_each_dyn_import(expr: &mut Expr, f: &mut impl FnMut(&mut String)) {
@@ -588,13 +853,19 @@ fn for_each_dyn_import(expr: &mut Expr, f: &mut impl FnMut(&mut String)) {
         Expr::Call { callee, args } => {
             for_each_dyn_import(callee, f);
             for a in args {
-                for_each_dyn_import(a, f);
+                match a {
+                    r2n_ast::expr::CallArg::Expr(e) => for_each_dyn_import(e, f),
+                    r2n_ast::expr::CallArg::Spread(e) => for_each_dyn_import(e, f),
+                }
             }
         }
         Expr::New { callee, args } => {
             for_each_dyn_import(callee, f);
             for a in args {
-                for_each_dyn_import(a, f);
+                match a {
+                    r2n_ast::expr::CallArg::Expr(e) => for_each_dyn_import(e, f),
+                    r2n_ast::expr::CallArg::Spread(e) => for_each_dyn_import(e, f),
+                }
             }
         }
         Expr::Assign { target, value } => {
@@ -618,10 +889,37 @@ fn for_each_dyn_import(expr: &mut Expr, f: &mut impl FnMut(&mut String)) {
         }
         Expr::Array(items) => {
             for item in items {
-                for_each_dyn_import(item, f);
+                match item {
+                    r2n_ast::expr::ArrayItem::Expr(e) => for_each_dyn_import(e, f),
+                    r2n_ast::expr::ArrayItem::Spread(e) => for_each_dyn_import(e, f),
+                }
             }
         }
+        Expr::Object(items) => {
+            for item in items {
+                match item {
+                    r2n_ast::expr::ObjectItem::Shorthand(_) => {}
+                    r2n_ast::expr::ObjectItem::Prop(_, v) => for_each_dyn_import(v, f),
+                    r2n_ast::expr::ObjectItem::Spread(e) => for_each_dyn_import(e, f),
+                }
+            }
+        }
+        Expr::Template { exprs, .. } => {
+            for e in exprs {
+                for_each_dyn_import(e, f);
+            }
+        }
+        Expr::Update { target, .. } => for_each_dyn_import(target, f),
+        Expr::CompoundAssign { target, value, .. } => {
+            for_each_dyn_import(target, f);
+            for_each_dyn_import(value, f);
+        }
         Expr::Arrow { body, .. } => for_each_dyn_import(body, f),
+        Expr::Function { body, .. } => {
+            for s in body {
+                for_each_dyn_import_in_stmt(s, f);
+            }
+        }
         Expr::Yield { value, .. } => {
             if let Some(v) = value {
                 for_each_dyn_import(v, f);
@@ -634,6 +932,16 @@ fn for_each_dyn_import(expr: &mut Expr, f: &mut impl FnMut(&mut String)) {
             }
         }
         Expr::Throw(v) => for_each_dyn_import(v, f),
+        Expr::Return(v) => {
+            if let Some(e) = v {
+                for_each_dyn_import(e, f);
+            }
+        }
+        Expr::While { cond, body } => {
+            for_each_dyn_import(cond, f);
+            for_each_dyn_import(body, f);
+        }
+        Expr::Break | Expr::Continue => {}
         Expr::Try {
             block,
             catch,

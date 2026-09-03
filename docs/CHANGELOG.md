@@ -65,6 +65,26 @@ correspond to git tags that must point at a green CI commit on main.
   every variable read). `T262-SEQ-008` promoted to pass and two new
   identity cases added (distinct evaluations are distinct functions;
   repeated method reads share identity). Score 117/130 → **120/132 = 91%**.
+- General statement grammar + destructuring (M2-T10): `if`/`while`/`for`/
+  `switch`/`break`/`continue`/early `return`/bare `return;` in plain
+  functions (new `JsExpr::{Switch, Break, Continue, Return}` IR; runtime
+  switch fall-through driver and `While.step` so `for` updates run on
+  `continue` but not `break`; `return` travels the error channel — boxed —
+  caught at call/async-step/generator-step/callback/reducer/handler/memo/
+  effect boundaries; `try` bodies accept the full grammar; `Expr::Return`
+  so `return` inside `try` raises instead of falling through); object/array
+  destructuring with rest/defaults in fn bodies, component bodies, params
+  (by-name prop binding), top-level lets, and defaults (`lower_param_binds`
+  + `lower_destructure`); function expressions; multi-interpolation
+  templates; exported functions and `memo(fn)` consts link as components;
+  entry falls back to its sole component; linker probes `.r2n`/`.js`/`.jsx`
+  and skips external packages (runtime builtins: `memo`, `classnames`,
+  `useLocation`) and `.css`; builtins `concat`/`every`/`Math.random`.
+  Rest params (`...args`) stay a precise `Unsupported` (split to M2-T10b).
+- First real app runs (M2-T10 evidence): the TodoMVC app (`app.jsx`,
+  `reducer.js`, 5 components) renders its full header/main/footer tree via
+  `r2n render`, and its real `todoReducer` executes ADD/TOGGLE/REMOVE
+  correctly. Suite is now 297 green, clippy clean.
 
 
 ## v0.1.0 — 2026-08-30

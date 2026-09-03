@@ -82,7 +82,10 @@ mod tests {
                         callee.as_ref(),
                         r2n_ast::expr::Expr::Member { .. }
                     ));
-                    assert!(matches!(args[0], r2n_ast::expr::Expr::Arrow { .. }));
+                    assert!(matches!(
+                        args[0],
+                        r2n_ast::expr::CallArg::Expr(r2n_ast::expr::Expr::Arrow { .. })
+                    ));
                 } else {
                     panic!("expected call to map");
                 }

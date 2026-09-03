@@ -48,7 +48,9 @@ pub enum JsExpr {
         body: Box<JsExpr>,
     },
     /// An array literal.
-    Array(Vec<JsExpr>),
+    Array(Vec<JsArrayItem>),
+    /// An object literal: ordered items (shorthand, key/value, spread).
+    Object(Vec<JsObjectItem>),
     /// A block of expressions evaluated in order; the block's value is its
     /// last expression (or null when empty). From block-bodied arrows.
     Block(Vec<JsExpr>),
@@ -85,6 +87,48 @@ pub enum JsExpr {
         catch: Option<Vec<JsExpr>>,
         finally: Option<Vec<JsExpr>>,
     },
+    /// `while (cond) body` — evaluated for side effects; value is null.
+    /// `break`/`continue` inside `body` are handled by the runtime's
+    /// control-flow protocol (not by value propagation). `step` runs after
+    /// each iteration INCLUDING `continue` (but not after `break`) — it
+    /// carries C-style `for` update semantics; plain `while` leaves it None.
+    While {
+        cond: Box<JsExpr>,
+        body: Box<JsExpr>,
+        step: Option<Box<JsExpr>>,
+    },
+    /// `switch (disc) { case t: stmts...; default: stmts... }` — ECMA
+    /// fall-through: the first matching case runs, then execution continues
+    /// into subsequent cases until `break` (or the end). Value is null.
+    Switch {
+        disc: Box<JsExpr>,
+        /// `(test, body)` per `case` in source order (`test == None` is
+        /// unreachable here — `default` has its own field — but kept
+        /// explicit so lowering stays total).
+        cases: Vec<SwitchCase>,
+        default: Option<Vec<JsExpr>>,
+    },
+    /// `x++` / `x--` / `++x` / `--x` — numeric update with JS value semantics
+    /// (postfix yields the OLD value, prefix the NEW; both coerce via
+    /// ToNumber like `+`).
+    Update {
+        inc: bool,
+        target: Box<JsExpr>,
+        prefix: bool,
+    },
+    /// Call arguments after spread expansion: `...spread` items are spliced
+    /// at CALL time by the runtime (arrays spread element-wise; non-arrays
+    /// are a precise runtime error).
+    SpreadArg(Box<JsExpr>),
+    /// `break;` — raises loop/switch control flow through the runtime's
+    /// error channel; a stray use outside a loop/switch is a runtime error.
+    Break,
+    /// `continue;` — raises loop control flow; stray use is a runtime error.
+    Continue,
+    /// `return expr?;` — raises function-return control flow carrying the
+    /// value (or undefined for bare `return;`); caught at the function-call
+    /// boundary. A stray use outside a function is a runtime error.
+    Return(Option<Box<JsExpr>>),
     /// Reference to a builtin by name (e.g. `"useState"`, `"items.map"` is a
     /// member call, not a builtin). Builtins are resolved by the runtime.
     Builtin(String),
@@ -93,6 +137,32 @@ pub enum JsExpr {
     /// a `Value::Children` holding the nodes verbatim (they still reference
     /// the PARENT's scope — the child splices them, it does not own them).
     Children(Vec<crate::react::ReactNode>),
+}
+
+/// One item inside a lowered array literal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum JsArrayItem {
+    Expr(JsExpr),
+    Spread(JsExpr),
+}
+
+/// One `case test: stmts...` inside a lowered `switch` (`default` is stored
+/// separately on `JsExpr::Switch`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SwitchCase {
+    pub test: JsExpr,
+    pub body: Vec<JsExpr>,
+}
+
+/// One item inside a lowered object literal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum JsObjectItem {
+    /// `{name}` — value is the in-scope binding.
+    Shorthand(String),
+    /// `{key: value}`.
+    Prop(String, JsExpr),
+    /// `{...expr}` — spread own enumerable props.
+    Spread(JsExpr),
 }
 
 /// One await-delimited segment of an async function (M2-T07). `stmts` run in
@@ -127,6 +197,8 @@ pub enum JsBinOp {
     Ge,
     And,
     Or,
+    Nullish,
+    BitOr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -153,6 +225,8 @@ impl JsBinOp {
             JsBinOp::Ge => ">=",
             JsBinOp::And => "&&",
             JsBinOp::Or => "||",
+            JsBinOp::Nullish => "??",
+            JsBinOp::BitOr => "|",
         }
     }
 }

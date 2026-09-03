@@ -492,6 +492,9 @@ pub fn iter_result(value: Value, done: bool) -> Value {
 
 /// Type errors raised by evaluation (e.g. calling a non-function), and the
 /// carrier for JS `throw` — any value can be thrown, so the error carries it.
+/// Control flow (`break`/`continue`) also travels as a `RuntimeError` variant:
+/// the loop driver recognizes it; anything else (try/catch, flush/dispatch)
+/// treats it as an unterminated-loop internal error, never user-visible.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeError {
     message: String,
@@ -500,6 +503,19 @@ pub struct RuntimeError {
     /// to Error instances; ours surface as strings until a full Error class
     /// lands — `throw new Error(msg)` already produces a real Error object).
     thrown: Option<Value>,
+    control: Option<ControlFlow>,
+}
+
+/// Loop control flow traveling through the error channel.
+#[derive(Debug, Clone, PartialEq)]
+enum ControlFlow {
+    Break,
+    Continue,
+    /// `return v` in flight — caught at the function-call boundary, where
+    /// the carried value becomes the call's result. Boxed: control flow is
+    /// the cold path, and an inline `Value` would push `RuntimeError` past
+    /// clippy's `result_large_err` threshold.
+    Return(Box<Value>),
 }
 
 impl RuntimeError {
@@ -507,6 +523,53 @@ impl RuntimeError {
         Self {
             message: msg.into(),
             thrown: None,
+            control: None,
+        }
+    }
+
+    /// `break;` — recognized by the innermost loop/switch driver.
+    pub fn break_() -> Self {
+        Self {
+            message: "break outside a loop or switch".to_string(),
+            thrown: None,
+            control: Some(ControlFlow::Break),
+        }
+    }
+
+    /// `continue;` — recognized by the innermost loop driver.
+    pub fn continue_() -> Self {
+        Self {
+            message: "continue outside a loop".to_string(),
+            thrown: None,
+            control: Some(ControlFlow::Continue),
+        }
+    }
+
+    /// True when this error is a `break` in flight.
+    pub fn is_break(&self) -> bool {
+        matches!(self.control, Some(ControlFlow::Break))
+    }
+
+    /// True when this error is a `continue` in flight.
+    pub fn is_continue(&self) -> bool {
+        matches!(self.control, Some(ControlFlow::Continue))
+    }
+
+    /// `return v;` — recognized at the function-call boundary, where the
+    /// carried value becomes the call's result.
+    pub fn return_(value: Value) -> Self {
+        Self {
+            message: "return outside a function".to_string(),
+            thrown: None,
+            control: Some(ControlFlow::Return(Box::new(value))),
+        }
+    }
+
+    /// When this error is a `return` in flight, the carried value.
+    pub fn return_value(&self) -> Option<Value> {
+        match &self.control {
+            Some(ControlFlow::Return(v)) => Some((**v).clone()),
+            _ => None,
         }
     }
 
@@ -525,6 +588,7 @@ impl RuntimeError {
         Self {
             message,
             thrown: Some(value),
+            control: None,
         }
     }
 
