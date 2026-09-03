@@ -197,7 +197,8 @@ impl Runtime {
         // dynamic `import("id")` (lowered to `@module:{id}`) resolves to the
         // module's namespace at runtime.
         for m in &template.modules {
-            let mut ns: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+            let mut ns: std::collections::BTreeMap<String, Value> =
+                std::collections::BTreeMap::new();
             for (name, idx) in &m.exports {
                 ns.insert(name.clone(), Value::ComponentRefVal(*idx));
             }
@@ -1710,7 +1711,9 @@ impl RenderedNode {
 /// same keyed child survives a branch flip.
 fn static_key_expr(node: &ReactNode) -> Option<&r2n_ir::js::JsExpr> {
     match node {
-        ReactNode::Host { props, .. } | ReactNode::Component { props, .. } | ReactNode::ComponentExpr { props, .. } => {
+        ReactNode::Host { props, .. }
+        | ReactNode::Component { props, .. }
+        | ReactNode::ComponentExpr { props, .. } => {
             props.iter().find(|(n, _)| n == "key").map(|(_, e)| e)
         }
         ReactNode::If { then, else_, .. } => {

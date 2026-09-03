@@ -338,13 +338,13 @@ impl<'a> Parser<'a> {
                 let mut names = Vec::new();
                 while !self.check(&TokenKind::RightBrace) {
                     let local = self.expect_ident()?;
-                    let exported =
-                        if matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "as") {
-                            self.advance()?;
-                            self.expect_ident()?
-                        } else {
-                            local.clone()
-                        };
+                    let exported = if matches!(&self.current.kind, TokenKind::Ident(kw) if kw == "as")
+                    {
+                        self.advance()?;
+                        self.expect_ident()?
+                    } else {
+                        local.clone()
+                    };
                     names.push((local, exported));
                     if self.check(&TokenKind::Comma) {
                         self.advance()?;

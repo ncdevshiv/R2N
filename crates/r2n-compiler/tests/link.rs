@@ -136,7 +136,10 @@ fn import_cycle_is_a_precise_error() {
     "#;
     let r = resolver(&[("app", entry), ("a", a), ("b", b)]);
     let err = link_source(entry, "app", &r).unwrap_err();
-    assert!(matches!(err, r2n_compiler::LinkError::ImportCycle(_)), "got: {err}");
+    assert!(
+        matches!(err, r2n_compiler::LinkError::ImportCycle(_)),
+        "got: {err}"
+    );
 }
 
 #[test]
@@ -149,7 +152,10 @@ fn unknown_export_is_a_precise_error() {
     let widget = "component Widget() { return <span/>; }\nexport { Widget };";
     let r = resolver(&[("app", entry), ("widget", widget)]);
     let err = link_source(entry, "app", &r).unwrap_err();
-    assert!(matches!(err, r2n_compiler::LinkError::UnknownExport { .. }), "got: {err}");
+    assert!(
+        matches!(err, r2n_compiler::LinkError::UnknownExport { .. }),
+        "got: {err}"
+    );
 }
 
 #[test]
@@ -165,7 +171,10 @@ fn entry_must_export_default_a_component() {
     "#;
     let r = resolver(&[("app", entry), ("widget", widget)]);
     let err = link_source(entry, "app", &r).unwrap_err();
-    assert!(matches!(err, r2n_compiler::LinkError::NoDefault(_)), "got: {err}");
+    assert!(
+        matches!(err, r2n_compiler::LinkError::NoDefault(_)),
+        "got: {err}"
+    );
 }
 
 #[test]
@@ -251,5 +260,3 @@ fn dynamic_import_specifier_is_canonicalized_to_the_resolved_id() {
         "dynamic import specifier canonicalized"
     );
 }
-
-

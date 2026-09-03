@@ -113,7 +113,6 @@ pub fn lower_module_parts(
     Ok((parts, generators, default))
 }
 
-
 fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, LowerError> {
     // 1. Build the component name -> index table.
     let mut index: HashMap<String, usize> = HashMap::new();
@@ -632,9 +631,7 @@ fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, Low
         // namespace record. The specifier is a compile-time string literal, so
         // the reserved name is deterministic; the linker (M2-T09) maps it to
         // the module's table index `N` when assembling the program.
-        Expr::DynImport { specifier } => {
-            JsExpr::Var(format!("@module:{specifier}"))
-        }
+        Expr::DynImport { specifier } => JsExpr::Var(format!("@module:{specifier}")),
         Expr::Element(_) => {
             return Err(LowerError::InvalidListMap(
                 "element used as a value".to_string(),
@@ -1097,7 +1094,9 @@ fn lower_child(
             }
         }
         // `{cond && <el/>}` / `{cond || <el/>}`: short-circuit rendering.
-        Expr::Binary { .. } if is_short_circuit_render(child) => lower_short_circuit(child, index, locals),
+        Expr::Binary { .. } if is_short_circuit_render(child) => {
+            lower_short_circuit(child, index, locals)
+        }
         // A `{expr}` child renders as text.
         other => Ok(ReactNode::Text(lower_expr(other, index)?)),
     }
@@ -1203,7 +1202,9 @@ fn try_lower_list(
     // The key expression: prefer the `key` prop of the item element; otherwise
     // the item value itself.
     let key_expr = match &item {
-        ReactNode::Host { props, .. } | ReactNode::Component { props, .. } | ReactNode::ComponentExpr { props, .. } => {
+        ReactNode::Host { props, .. }
+        | ReactNode::Component { props, .. }
+        | ReactNode::ComponentExpr { props, .. } => {
             if let Some((_, k)) = props.iter().find(|(n, _)| n == "key") {
                 subst_expr(k.clone(), &item_var, "$item")
             } else {

@@ -24,7 +24,11 @@ use std::fmt;
 #[derive(Debug, Clone)]
 pub enum LinkError {
     /// A module specifier could not be resolved to a canonical id.
-    Resolve { from: String, specifier: String, reason: String },
+    Resolve {
+        from: String,
+        specifier: String,
+        reason: String,
+    },
     /// A module's source could not be loaded.
     Load(String),
     /// A module failed to parse.
@@ -42,8 +46,15 @@ pub enum LinkError {
 impl fmt::Display for LinkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LinkError::Resolve { from, specifier, reason } => {
-                write!(f, "cannot resolve '{specifier}' imported by '{from}': {reason}")
+            LinkError::Resolve {
+                from,
+                specifier,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "cannot resolve '{specifier}' imported by '{from}': {reason}"
+                )
             }
             LinkError::Load(m) => write!(f, "load error: {m}"),
             LinkError::Parse(m) => write!(f, "parse error: {m}"),
@@ -299,14 +310,30 @@ fn link_source_mode(
         let stored = modules[id].deps.clone();
         for dep in &stored {
             let dep_source = resolver.load(dep)?;
-            dfs(dep, &dep_source, resolver, modules, order, visiting, visited)?;
+            dfs(
+                dep,
+                &dep_source,
+                resolver,
+                modules,
+                order,
+                visiting,
+                visited,
+            )?;
         }
         visiting.pop();
         visited.insert(id.to_string());
         Ok(())
     }
 
-    dfs(entry_id, entry_source, resolver, &mut modules, &mut order, &mut visiting, &mut visited)?;
+    dfs(
+        entry_id,
+        entry_source,
+        resolver,
+        &mut modules,
+        &mut order,
+        &mut visiting,
+        &mut visited,
+    )?;
 
     // Canonicalize dynamic-import specifiers: rewrite each `import("raw")` to
     // `import("canonical_id")` so the lowerer's `@module:{specifier}` key matches
@@ -361,16 +388,31 @@ fn link_source_mode(
             match decl {
                 Decl::Component(c) => {
                     let idx = own[&c.name];
-                    decl_map.insert(c.name.clone(), Export { kind: ExportKind::Component, index: idx });
+                    decl_map.insert(
+                        c.name.clone(),
+                        Export {
+                            kind: ExportKind::Component,
+                            index: idx,
+                        },
+                    );
                 }
                 Decl::Class(c) => {
                     let idx = own[&c.name];
-                    decl_map.insert(c.name.clone(), Export { kind: ExportKind::Component, index: idx });
+                    decl_map.insert(
+                        c.name.clone(),
+                        Export {
+                            kind: ExportKind::Component,
+                            index: idx,
+                        },
+                    );
                 }
                 Decl::GeneratorFn(g) => {
                     decl_map.insert(
                         g.name.clone(),
-                        Export { kind: ExportKind::Generator, index: usize::MAX },
+                        Export {
+                            kind: ExportKind::Generator,
+                            index: usize::MAX,
+                        },
                     );
                 }
                 _ => {}
@@ -433,7 +475,10 @@ fn link_source_mode(
             .map(|(n, e)| (n.clone(), e.index))
             .collect();
         exps.sort();
-        module_irs.push(ModuleIr { id: id.clone(), exports: exps });
+        module_irs.push(ModuleIr {
+            id: id.clone(),
+            exports: exps,
+        });
     }
 
     let root = root_name
@@ -625,10 +670,12 @@ fn resolve_import_bindings(
     target: &str,
     exports: &HashMap<String, HashMap<String, Export>>,
 ) -> Result<Vec<(String, usize)>, LinkError> {
-    let target_exports = exports.get(target).ok_or_else(|| LinkError::UnknownExport {
-        module: from.to_string(),
-        exported: target.to_string(),
-    })?;
+    let target_exports = exports
+        .get(target)
+        .ok_or_else(|| LinkError::UnknownExport {
+            module: from.to_string(),
+            exported: target.to_string(),
+        })?;
     let mut out = Vec::new();
     if let Some(def) = &import.default_ {
         match target_exports.get("default") {
@@ -668,7 +715,11 @@ fn strip_strict(n: ReactNode) -> ReactNode {
             key: None,
             children: children.into_iter().map(strip_strict).collect(),
         },
-        ReactNode::Host { tag, props, children } => ReactNode::Host {
+        ReactNode::Host {
+            tag,
+            props,
+            children,
+        } => ReactNode::Host {
             tag,
             props,
             children: children.into_iter().map(strip_strict).collect(),
@@ -708,6 +759,3 @@ fn strip_strict(n: ReactNode) -> ReactNode {
         other => other,
     }
 }
-
-
-

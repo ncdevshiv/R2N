@@ -13,8 +13,8 @@
 //! reconciliation.
 
 use std::fs;
-use std::process::exit;
 use std::path::{Path, PathBuf};
+use std::process::exit;
 
 use r2n_compiler::{link_source, FsResolver, LinkError};
 use r2n_runtime::{NodeId, Renderer};

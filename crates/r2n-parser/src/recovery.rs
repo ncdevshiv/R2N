@@ -400,13 +400,13 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                 let mut names = Vec::new();
                 while !self.check(&TokenKind::RightBrace) {
                     let local = self.expect_ident()?;
-                    let exported =
-                        if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "as") {
-                            self.bump();
-                            self.expect_ident()?
-                        } else {
-                            local.clone()
-                        };
+                    let exported = if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "as")
+                    {
+                        self.bump();
+                        self.expect_ident()?
+                    } else {
+                        local.clone()
+                    };
                     names.push((local, exported));
                     if self.check(&TokenKind::Comma) {
                         self.bump();

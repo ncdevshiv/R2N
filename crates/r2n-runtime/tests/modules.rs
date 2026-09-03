@@ -44,8 +44,7 @@ fn renders_an_imported_component_across_modules() {
     "#;
     let out = render(&[("app", entry), ("widget", widget)]);
     assert_eq!(
-        out,
-        "<div className=\"app\"><span className=\"w\">hi</span></div>",
+        out, "<div className=\"app\"><span className=\"w\">hi</span></div>",
         "imported component renders inside the entry tree"
     );
 }
@@ -71,8 +70,7 @@ fn dynamic_import_reads_a_module_namespace() {
     "#;
     let out = render(&[("app", entry), ("widget", widget)]);
     assert_eq!(
-        out,
-        "<div><span className=\"w\">hi</span></div>",
+        out, "<div><span className=\"w\">hi</span></div>",
         "a namespace component rendered in value position mounts the component"
     );
 }
@@ -94,8 +92,7 @@ fn dynamically_only_imported_module_renders_its_component_ref() {
     "#;
     let out = render(&[("app", entry), ("lazy", lazy)]);
     assert_eq!(
-        out,
-        "<div><span className=\"l\">z</span></div>",
+        out, "<div><span className=\"l\">z</span></div>",
         "a dynamically-only module component mounts in value position"
     );
 }
@@ -121,8 +118,7 @@ fn component_ref_in_a_local_binding_renders_the_component() {
     "#;
     let out = render(&[("app", entry), ("widget", widget)]);
     assert_eq!(
-        out,
-        "<div className=\"app\"><span className=\"w\">hi</span></div>",
+        out, "<div className=\"app\"><span className=\"w\">hi</span></div>",
         "a ComponentRefVal held in a local binding mounts the component"
     );
 }
@@ -148,8 +144,7 @@ fn local_binding_component_rendered_as_jsx_tag() {
     "#;
     let out = render(&[("app", entry), ("widget", widget)]);
     assert_eq!(
-        out,
-        "<div className=\"app\"><span className=\"w\">hi</span></div>",
+        out, "<div className=\"app\"><span className=\"w\">hi</span></div>",
         "a local component value used as a JSX tag mounts the component"
     );
 }
@@ -175,8 +170,7 @@ fn local_binding_component_jsx_tag_with_props_and_children() {
     "#;
     let out = render(&[("app", entry), ("widget", widget)]);
     assert_eq!(
-        out,
-        "<div className=\"app\"><span className=\"w\">from-prop:inner</span></div>",
+        out, "<div className=\"app\"><span className=\"w\">from-prop:inner</span></div>",
         "props and children flow through a component rendered as a JSX tag"
     );
 }
@@ -203,8 +197,7 @@ fn component_passed_as_prop_then_rendered_as_jsx_tag() {
     "#;
     let out = render(&[("app", entry), ("widget", widget)]);
     assert_eq!(
-        out,
-        "<div className=\"card\"><span className=\"w\">hi</span></div>",
+        out, "<div className=\"card\"><span className=\"w\">hi</span></div>",
         "a component passed as a prop and rendered as <P/> mounts the component"
     );
 }
@@ -229,8 +222,7 @@ fn namespace_member_rendered_as_jsx_tag() {
     "#;
     let out = render(&[("app", entry), ("widget", widget)]);
     assert_eq!(
-        out,
-        "<div className=\"app\"><span className=\"w\">hi</span></div>",
+        out, "<div className=\"app\"><span className=\"w\">hi</span></div>",
         "a namespace member rendered as a JSX tag mounts the member component"
     );
 }
@@ -254,8 +246,7 @@ fn namespace_member_jsx_tag_with_props_and_children() {
     "#;
     let out = render(&[("app", entry), ("widget", widget)]);
     assert_eq!(
-        out,
-        "<div className=\"app\"><span className=\"w\">from-prop:inner</span></div>",
+        out, "<div className=\"app\"><span className=\"w\">from-prop:inner</span></div>",
         "props and children flow through a namespace member rendered as a JSX tag"
     );
 }
@@ -283,8 +274,7 @@ fn namespace_member_via_prop_rendered_as_jsx_tag() {
     "#;
     let out = render(&[("app", entry), ("widget", widget)]);
     assert_eq!(
-        out,
-        "<div className=\"card\"><span className=\"w\">hi</span></div>",
+        out, "<div className=\"card\"><span className=\"w\">hi</span></div>",
         "a namespace object passed as a prop renders a member component as a JSX tag"
     );
 }

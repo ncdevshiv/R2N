@@ -8,9 +8,7 @@
 
 mod link;
 
-pub use link::{
-    link_source, link_source_dev, FsResolver, LinkError, MemResolver, ModuleResolver,
-};
+pub use link::{link_source, link_source_dev, FsResolver, LinkError, MemResolver, ModuleResolver};
 use r2n_ir::runtime::RuntimeTemplate;
 use r2n_ir::{lower, LowerError};
 use r2n_parser::ParseError;
