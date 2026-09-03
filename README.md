@@ -26,10 +26,10 @@ source (.r2n)  →  Lexer  →  Parser (AST)  →  Lowering  →  JS IR ─┐
 | M0.2 Reactive runtime loop | **DONE** | 14/14 |
 | M0.3 Compiler frontend (JS/JSX → IR) | **DONE** | 9/9 |
 | M1 React compatibility — hooks, keys, context, effects | **DONE** | 18/18 |
-| M2 JavaScript compatibility — full ECMAScript semantics | in progress | 10/16 |
+| M2 JavaScript compatibility — full ECMAScript semantics | in progress | 11/17 |
 | M3–M7 | planned | — |
 
-**Overall: 64/107 roadmap tasks.** Every claim above is backed by the test suite (`cargo test`) and the architecture-guard tests. **JS compatibility: 91% of the test262-aligned subset** ([docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — kept honest by the harness's consistency test). See [roadmap/CHECKLIST.md](roadmap/CHECKLIST.md) for the task-level record, [JOURNAL.md](JOURNAL.md) for decision history, and [docs/AUDIT.md](docs/AUDIT.md) for the latest audit report.
+**Overall: 65/108 roadmap tasks.** Every claim above is backed by the test suite (`cargo test`) and the architecture-guard tests. **JS compatibility: 91% of the test262-aligned subset** ([docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — kept honest by the harness's consistency test). **First real app runs**: the TodoMVC app (`app.jsx` + reducer + 5 components) renders its full tree via `r2n render`, and its real `todoReducer` executes ADD/TOGGLE/REMOVE correctly. See [roadmap/CHECKLIST.md](roadmap/CHECKLIST.md) for the task-level record, [JOURNAL.md](JOURNAL.md) for decision history, and [docs/AUDIT.md](docs/AUDIT.md) for the latest audit report.
 
 ### What works today (all test-verified)
 
@@ -54,7 +54,7 @@ Everything in M2–M7: the remainder of full ECMAScript semantics (objects/proto
 
 ```bash
 cargo build --workspace
-cargo test --workspace          # 273 tests incl. architecture + acceptance guards
+cargo test --workspace          # 297 tests incl. architecture + acceptance guards
 cargo clippy --workspace --all-targets -- -D warnings
 scripts/verify-audit-claims.sh  # re-derives every README/roadmap claim from source
 ```

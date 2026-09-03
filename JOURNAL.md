@@ -1594,3 +1594,88 @@ Identity token on the value, minted per construction site; token-based
 equality in both comparison paths. 0 new engine tests needed — the
 harness's three StrictEq identity cases ARE the tests; suite 273; score
 120/132 = 91%; records (M2 10/16, 64/107).
+
+## 2026-09-03 — Entry 34: M2-T10 General statement grammar + destructuring; first real app runs
+
+**PLAN**
+The `/goal` directive: finish the project enough to run an existing
+open-source Electron/React app through R2N, and report what is lacking to
+turn any React app into the native layer. First concrete step: the
+TodoMVC sources (`app.jsx`, `reducer.js`, 5 components) must PARSE, LINK,
+and RENDER — which forces the general statement grammar (`switch`,
+`while`, early `return`), destructuring/spread, and real-world module
+shapes (`.js`/`.jsx` imports, `react` externals, `export function App`
+with no default) through the whole pipeline.
+
+**WHAT**
+- IR: `JsExpr::{Switch, Break, Continue, Return}` + `While.step`
+  (for-update runs on `continue`, skipped on `break`) + `SwitchCase`.
+- Runtime: switch fall-through driver (strict-equality match, `break`
+  exits, `default`); Break/Continue/Return raises; `Return(Box<Value>)`
+  boxed in `RuntimeError` (keeps the error under clippy's large_err
+  threshold); `return_value()` caught at EVERY function-like boundary via
+  one `eval_function_body` helper (plain calls, async steps → resolve,
+  generator steps → done, map/filter/every callbacks, reducer dispatch,
+  handlers, useMemo factories, effect bodies); control flow bypasses
+  `catch` but runs `finally`.
+- Lowerer: `lower_stmt` for fn bodies (if/while/for/switch/destructure/
+  return); `lower_param_binds` (defaults via `undefined` guards,
+  destructuring via `$p{i}` synthetics, rest params a precise
+  `Unsupported`); `lower_destructure`/`lower_pattern_into` (`$dstN` temp,
+  `$rest`/`$restFrom` member builtins); component bodies accept
+  destructuring + param defaults; engine binds component params BY PROP
+  NAME (positional zip misbound `<Input editing onSubmit.../>`); exported
+  functions and `memo(fn)` consts lower as COMPONENTS (`component_fn_of`
+  unwraps `memo()`); top-level destructuring expands to temp + entries.
+- Parser: bare `return;` (→ undefined), function expressions
+  (`memo(function Item(){...})`), multi-interpolation templates (the
+  interpolation-close `expect(RightBrace)` advanced through `next_token`,
+  which chokes on a following `${` — now consumes the brace without
+  advancing; the loop's `lex_template_chunk` reads `rest` directly),
+  `Expr::Return` so `return` inside `try` raises (plus `try` bodies accept
+  the full grammar via `stmt_to_block_expr`); `stmts_to_block_expr`
+  returns raise too. Recovery twin mirrors both.
+- Linker: `FsResolver` probes exact → `.r2n` → `.js` → `.jsx`; external
+  specifiers (bare packages, `.css`) skip discovery AND binding via the
+  resolve-error protocol (resolvers that KNOW a bare id still link — the
+  MemResolver fixtures keep passing); entry root falls back to its sole
+  component; link tests updated (entry-default test split in two).
+- Builtins: `concat`, `every`, `Math.random` (xorshift64*, deterministic
+  seed), `memo` (identity), `classnames` (real subset), `useLocation`
+  (`{pathname: "/"}` stub), `useReducer` accepts module-level reducer
+  values (not just inline arrows).
+- Evidence: `r2n render app.jsx` renders the full header/main/footer tree
+  (`0 items left!`, router-aware `selected` on All); the REAL `todoReducer`
+  driven through ADD/TOGGLE/REMOVE/TOGGLE_ALL/REMOVE_COMPLETED produces
+  exactly the right trees. 23 new behavioral tests
+  (`tests/statements.rs`); suite 297 green, clippy `-D warnings` clean,
+  fmt clean, audit 9/9.
+
+**WHY**
+Real React code is statements, not expressions: the reducer is a `switch`
+with early returns, `nanoid` is a `while` loop, components destructure
+props, and every file imports `react` by bare specifier. Each construct
+was missing OR silently wrong (value-form `return`-in-try fell through;
+`for`+`continue` skipped the update; positional prop binding misbound
+reordered props). The error-channel protocol already existed for
+break/continue — extending it to `return` unified all three abrupt
+completions instead of inventing a second mechanism.
+
+**OPTIONS**
+- Desugar `for` update by appending to the body: rejected — `continue`
+  would skip the update (infinite loop; a test caught it mid-branch).
+- Desugar `switch` to a ternary chain (the old arrow-body approach):
+  rejected for functions — loses fall-through and `break` semantics; kept
+  ONLY where it already worked (arrow bodies without break).
+- Structural function equality for `memo`: N/A — memo is identity, the
+  component table (not the value) carries the memo-wrapped component.
+- Rest params via call-site arg-vector: deferred to M2-T10b (new open
+  task) — needs `rest` slots on FuncIr/Closure plus call_value
+  collection; the precise error names the workaround (explicit args).
+
+**CHOSE**
+Control-flow channel for all abrupt completions; by-name prop binding;
+exported functions ARE components (React semantics); externals skip at
+link, resolve by builtin name at runtime. T10 checked with a T10b
+(rest-params) split following the T09/T09b precedent. Records: M2 11/17,
+65/108, 297 tests.

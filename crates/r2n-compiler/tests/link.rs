@@ -159,8 +159,10 @@ fn unknown_export_is_a_precise_error() {
 }
 
 #[test]
-fn entry_must_export_default_a_component() {
-    // The imported module does not need a default export, but the entry does.
+fn entry_without_default_uses_its_sole_component() {
+    // No `export default`, but the entry declares exactly ONE component:
+    // that component is the root (the `export function App()` shape real
+    // React apps use). The imported module still needs no default.
     let entry = r#"
         import { Widget } from "widget";
         component App() { return <div><Widget/></div>; }
@@ -170,6 +172,20 @@ fn entry_must_export_default_a_component() {
         export { Widget };
     "#;
     let r = resolver(&[("app", entry), ("widget", widget)]);
+    let t = link_source(entry, "app", &r).expect("sole entry component is the root");
+    assert_eq!(t.root, 0);
+    assert_eq!(t.components[0].name, "App");
+}
+
+#[test]
+fn entry_with_several_components_still_needs_a_default() {
+    // Ambiguous entry (two components, no default) is still a precise
+    // NoDefault error — the fallback only applies when there is exactly one.
+    let entry = r#"
+        component App() { return <div/>; }
+        component Other() { return <span/>; }
+    "#;
+    let r = resolver(&[("app", entry)]);
     let err = link_source(entry, "app", &r).unwrap_err();
     assert!(
         matches!(err, r2n_compiler::LinkError::NoDefault(_)),

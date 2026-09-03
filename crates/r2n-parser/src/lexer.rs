@@ -14,6 +14,14 @@ pub enum TokenKind {
     Int(i64),
     Float(f64),
     String(String),
+    /// A template-literal chunk: cooked text between backtick/`${`/`}`/backtick
+    /// boundaries. The parser stitches `TemplateStart/Text/ExprEnd + expr +
+    /// TemplateText ... + TemplateDone` into one `Expr::Template`. Backslash
+    /// escapes decode the same as double-quoted strings; an unescaped newline
+    /// is literal text.
+    TemplateStart,
+    TemplateText(String),
+    TemplateEnd,
     // identifiers / keywords
     Ident(String),
     // punctuation
@@ -25,6 +33,7 @@ pub enum TokenKind {
     RightBracket,
     Comma,
     Dot,
+    DotDotDot, // ...
     Colon,
     Semicolon,
     Equals,
@@ -36,7 +45,14 @@ pub enum TokenKind {
     LtSlash, // </
     // operators
     Plus,
+    PlusPlus, // ++
     Minus,
+    MinusMinus, // --
+    PlusEq,     // +=
+    MinusEq,    // -=
+    StarEq,     // *=
+    SlashEq,    // /=
+    PercentEq,  // %=
     Star,
     Percent,
     Bang,
@@ -48,7 +64,9 @@ pub enum TokenKind {
     GtEq,
     AmpAmp,
     PipePipe,
+    Pipe, // | (bitwise OR)
     Question,
+    QuestionQuestion, // ??
     // meta
     Eof,
 }
@@ -60,6 +78,9 @@ impl TokenKind {
             TokenKind::Int(i) => format!("number `{i}`"),
             TokenKind::Float(f) => format!("number `{f}`"),
             TokenKind::String(s) => format!("string \"{s}\""),
+            TokenKind::TemplateStart => "`` ` ``".into(),
+            TokenKind::TemplateText(_) => "template text".into(),
+            TokenKind::TemplateEnd => "`` ` ``".into(),
             TokenKind::Ident(n) => format!("`{n}`"),
             TokenKind::LeftParen => "`(`".into(),
             TokenKind::RightParen => "`)`".into(),
@@ -69,6 +90,7 @@ impl TokenKind {
             TokenKind::RightBracket => "`]`".into(),
             TokenKind::Comma => "`,`".into(),
             TokenKind::Dot => "`.`".into(),
+            TokenKind::DotDotDot => "`...`".into(),
             TokenKind::Colon => "`:`".into(),
             TokenKind::Semicolon => "`;`".into(),
             TokenKind::Equals => "`=`".into(),
@@ -78,7 +100,14 @@ impl TokenKind {
             TokenKind::Slash => "`/`".into(),
             TokenKind::LtSlash => "`</`".into(),
             TokenKind::Plus => "`+`".into(),
+            TokenKind::PlusPlus => "`++`".into(),
             TokenKind::Minus => "`-`".into(),
+            TokenKind::MinusMinus => "`--`".into(),
+            TokenKind::PlusEq => "`+=`".into(),
+            TokenKind::MinusEq => "`-=`".into(),
+            TokenKind::StarEq => "`*=`".into(),
+            TokenKind::SlashEq => "`/=`".into(),
+            TokenKind::PercentEq => "`%=`".into(),
             TokenKind::Star => "`*`".into(),
             TokenKind::Percent => "`%`".into(),
             TokenKind::Bang => "`!`".into(),
@@ -90,7 +119,9 @@ impl TokenKind {
             TokenKind::GtEq => "`>=`".into(),
             TokenKind::AmpAmp => "`&&`".into(),
             TokenKind::PipePipe => "`||`".into(),
+            TokenKind::Pipe => "`|`".into(),
             TokenKind::Question => "`?`".into(),
+            TokenKind::QuestionQuestion => "`??`".into(),
             TokenKind::Eof => "end of file".into(),
         }
     }
@@ -123,12 +154,35 @@ pub struct Lexer<'a> {
     /// tokens have already advanced it past the token.
     token_line: usize,
     token_col: usize,
+    /// One-token pushback for the template-chunk protocol: when a chunk's
+    /// text is immediately followed by the closing backtick, `next_token`
+    /// must deliver TemplateText first and TemplateEnd second. `pending`
+    /// holds the TemplateEnd (with correct position) for the next call.
+    pending: Option<Token>,
+    /// Template interpolation depth: incremented by `lex_template_chunk`
+    /// when it consumes `${`, decremented when the parser's expression
+    /// parsing consumes the matching `}`. While > 0, a backtick is LITERAL
+    /// text (a nested template's closing backtick is handled by the nested
+    /// chunk protocol, not by `next_token`). The parser calls
+    /// `exit_template_expr` after consuming the interpolation's `}`.
+    /// NOTE: `Clone` copies this (lookahead clones never consume `${`).
+    template_depth: usize,
 }
 
-impl<'a> Copy for Lexer<'a> {}
 impl<'a> Clone for Lexer<'a> {
     fn clone(&self) -> Self {
-        *self
+        Self {
+            rest: self.rest,
+            line: self.line,
+            col: self.col,
+            src: self.src,
+            offset: self.offset,
+            token_start: self.token_start,
+            token_line: self.token_line,
+            token_col: self.token_col,
+            pending: self.pending.clone(),
+            template_depth: self.template_depth,
+        }
     }
 }
 
@@ -143,9 +197,19 @@ impl<'a> Lexer<'a> {
             token_start: 0,
             token_line: 1,
             token_col: 1,
+            pending: None,
+            template_depth: 0,
         };
         l.skip_trivia()?;
         Ok(l)
+    }
+
+    /// Called by the parser after consuming the `}` that closes a `${...}`
+    /// interpolation: the next chunk is template text again.
+    pub fn exit_template_expr(&mut self) {
+        if self.template_depth > 0 {
+            self.template_depth -= 1;
+        }
     }
 
     /// Rescan the pending token (and everything up to the next `{` or `<`)
@@ -279,6 +343,11 @@ impl<'a> Lexer<'a> {
 
     /// Produce the next token, advancing `rest` past it.
     pub fn next_token(&mut self) -> Result<Token, ParseError> {
+        // Template-chunk protocol: a TemplateEnd parked by lex_template_chunk
+        // is delivered before lexing anything new.
+        if let Some(tok) = self.pending.take() {
+            return Ok(tok);
+        }
         self.skip_trivia()?;
         self.token_start = self.offset;
         self.token_line = self.line;
@@ -304,11 +373,53 @@ impl<'a> Lexer<'a> {
         if c == '"' {
             return self.lex_string();
         }
+        if c == '`' {
+            // Inside a `${...}` interpolation, a backtick OPENS a nested
+            // template (lexed by the nested chunk protocol). At template
+            // top level this is unreachable (chunks consume backticks) —
+            // treat it as a nested start either way. EXCEPT when this
+            // backtick CLOSES the current template: that happens when the
+            // parser just consumed the interpolation's `}` via expect() —
+            // i.e. template_depth > 0 and the `${` it closes is ours. The
+            // parser calls exit_template_expr() right after expect(), but
+            // expect() itself advances THROUGH next_token — so the depth
+            // check must live HERE: if template_depth > 0, this backtick
+            // ends the current template chunk protocol...
+            //
+            // NO — simpler and correct: the parser NEVER lets next_token see
+            // a closing backtick. parse_template calls lex_template_chunk
+            // directly after the interpolation `}` (it does NOT go through
+            // expect-advance for that `}`... but it DOES: expect(RightBrace)
+            // advances past `}` via next_token, and rest is then "`;".
+            //
+            // The real fix: when template_depth > 0 and we see a backtick in
+            // next_token, this backtick closes the template whose `${`
+            // incremented the depth. Decrement and emit TemplateEnd WITHOUT
+            // consuming interior state — the chunk protocol resumes after.
+            if self.template_depth > 0 {
+                self.template_depth -= 1;
+                let tok = self.tok(TokenKind::TemplateEnd);
+                self.consume_char(); // closing backtick
+                return Ok(tok);
+            }
+            return self.lex_template_start();
+        }
+        if c == '$' {
+            // A lone `$` outside a template chunk (identifiers can't start
+            // with `$` in this dialect): precise error, not a confusing
+            // "unexpected character". (Inside templates, `${` is consumed by
+            // `lex_template_chunk`, never by `next_token`.)
+            return self.err("unexpected `$` (did you mean `${...}` inside a template literal?)");
+        }
         if c.is_ascii_alphabetic() || c == '_' {
             return self.lex_ident();
         }
 
-        // two-char operators first
+        // three-char operators first (`...`, `++`, `--`, `**=`, `>>=`, ...),
+        // then two-char, then single.
+        if let Some(tok) = self.try_three_char()? {
+            return Ok(tok);
+        }
         if let Some(tok) = self.try_two_char()? {
             return Ok(tok);
         }
@@ -331,6 +442,7 @@ impl<'a> Lexer<'a> {
             '%' => TokenKind::Percent,
             '!' => TokenKind::Bang,
             '?' => TokenKind::Question,
+            '|' => TokenKind::Pipe,
             '<' => TokenKind::Lt,
             '>' => TokenKind::Gt,
             '/' => TokenKind::Slash,
@@ -442,6 +554,32 @@ impl<'a> Lexer<'a> {
         Ok(self.tok(TokenKind::Ident(s.to_string())))
     }
 
+    fn try_three_char(&mut self) -> Result<Option<Token>, ParseError> {
+        let mut it = self.rest.chars();
+        let (a, b, c) = (it.next(), it.next(), it.next());
+        let kind = match (a, b, c) {
+            (Some('.'), Some('.'), Some('.')) => Some(TokenKind::DotDotDot),
+            (Some('+'), Some('+'), _) => Some(TokenKind::PlusPlus),
+            (Some('-'), Some('-'), _) => Some(TokenKind::MinusMinus),
+            // `+=` family is two chars, but `+` followed by `=` must not fall
+            // through to single-char `+` first — handled in try_two_char.
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            let width = match kind {
+                TokenKind::DotDotDot => 3,
+                _ => 2,
+            };
+            let tok = self.tok(kind);
+            for _ in 0..width {
+                self.consume_char();
+            }
+            Ok(Some(tok))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn try_two_char(&mut self) -> Result<Option<Token>, ParseError> {
         let c = self.rest.chars().next().unwrap();
         let kind = match c {
@@ -465,6 +603,12 @@ impl<'a> Lexer<'a> {
             '|' if self.rest.chars().nth(1) == Some('|') => Some(TokenKind::PipePipe),
             '=' if self.rest.chars().nth(1) == Some('>') => Some(TokenKind::Arrow),
             '<' if self.rest.chars().nth(1) == Some('/') => Some(TokenKind::LtSlash),
+            '+' if self.rest.chars().nth(1) == Some('=') => Some(TokenKind::PlusEq),
+            '-' if self.rest.chars().nth(1) == Some('=') => Some(TokenKind::MinusEq),
+            '*' if self.rest.chars().nth(1) == Some('=') => Some(TokenKind::StarEq),
+            '/' if self.rest.chars().nth(1) == Some('=') => Some(TokenKind::SlashEq),
+            '%' if self.rest.chars().nth(1) == Some('=') => Some(TokenKind::PercentEq),
+            '?' if self.rest.chars().nth(1) == Some('?') => Some(TokenKind::QuestionQuestion),
             _ => None,
         };
         if let Some(kind) = kind {
@@ -481,6 +625,105 @@ impl<'a> Lexer<'a> {
             Ok(Some(tok))
         } else {
             Ok(None)
+        }
+    }
+
+    /// Lex the opening backtick of a template literal. Returns
+    /// `TemplateStart`; the parser then calls `lex_template_chunk` for each
+    /// text chunk, parsing an expression after every chunk that ends at
+    /// `${`, until a chunk ends at the closing backtick (TemplateEnd).
+    fn lex_template_start(&mut self) -> Result<Token, ParseError> {
+        debug_assert_eq!(self.rest.chars().next(), Some('`'));
+        // Capture the token position BEFORE consuming: tok() reads the
+        // token_start/line/col set by next_token's preamble. (next_token set
+        // them at the backtick; nothing has moved since.)
+        let tok = self.tok(TokenKind::TemplateStart);
+        self.consume_char(); // opening backtick
+        Ok(tok)
+    }
+
+    /// Lex one template chunk after TemplateStart or after a `}` that closed
+    /// a `${...}` interpolation: raw text (with backslash escapes decoded)
+    /// up to `${` or the closing backtick. Returns TemplateText for a middle
+    /// chunk (`${` consumed, expression follows) or TemplateEnd (backtick
+    /// consumed, template done). An empty middle chunk yields
+    /// TemplateText("") so part/expr counts stay aligned.
+    pub fn lex_template_chunk(&mut self) -> Result<Token, ParseError> {
+        let mut buf = String::new();
+        loop {
+            match self.rest.chars().next() {
+                None => return self.err("unterminated template literal"),
+                Some('`') => {
+                    // End of template. The pending TemplateEnd token must be
+                    // positioned AT the backtick, so capture it before
+                    // consuming: tok() reads token_start/line/col, which still
+                    // point at the backtick (they were set by the caller —
+                    // next_token or the interpolation's closing brace path).
+                    // To guarantee that, re-anchor here.
+                    self.token_start = self.offset;
+                    self.token_line = self.line;
+                    self.token_col = self.col + 1;
+                    let end = self.tok(TokenKind::TemplateEnd);
+                    if !buf.is_empty() {
+                        // Text before the backtick: deliver TemplateText now,
+                        // park the End for the next call; the backtick itself
+                        // is consumed when the parked End is delivered... it
+                        // cannot be — consumption must happen now. Consume it
+                        // now; the parked token's OFFSET was already captured
+                        // above, so positions stay exact.
+                        self.consume_char();
+                        self.pending = Some(end);
+                        return Ok(self.tok(TokenKind::TemplateText(buf)));
+                    }
+                    self.consume_char();
+                    return Ok(end);
+                }
+                Some('$') if self.rest.chars().nth(1) == Some('{') => {
+                    self.consume_char();
+                    self.consume_char(); // ${
+                    self.template_depth += 1;
+                    return Ok(self.tok(TokenKind::TemplateText(buf)));
+                }
+                Some('\\') => {
+                    self.consume_char();
+                    match self.rest.chars().next() {
+                        None => return self.err("unterminated template literal"),
+                        Some('n') => {
+                            self.consume_char();
+                            buf.push('\n');
+                        }
+                        Some('t') => {
+                            self.consume_char();
+                            buf.push('\t');
+                        }
+                        Some('r') => {
+                            self.consume_char();
+                            buf.push('\r');
+                        }
+                        Some('`') => {
+                            self.consume_char();
+                            buf.push('`');
+                        }
+                        Some('$') => {
+                            self.consume_char();
+                            buf.push('$');
+                        }
+                        Some('\\') => {
+                            self.consume_char();
+                            buf.push('\\');
+                        }
+                        Some(other) => {
+                            self.consume_char();
+                            buf.push('\\');
+                            buf.push(other);
+                        }
+                    }
+                }
+                Some(c) => {
+                    self.consume_char();
+                    buf.push(c);
+                }
+            }
         }
     }
 }

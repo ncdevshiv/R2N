@@ -166,6 +166,10 @@ pub struct Runtime {
     /// The GLOBAL environment (M2-T08): top-level `function*` declarations
     /// bind here once; every render env chains from it (Env::child_of).
     global_env: Env,
+    /// Whether module top-level `let`/`const` bindings have been evaluated
+    /// (T09b). Runs lazily at the first `flush` so `Runtime::new` stays
+    /// infallible — all 47 existing call sites keep compiling unchanged.
+    modules_initialized: bool,
 }
 
 struct LogHost<'a> {
@@ -192,6 +196,21 @@ impl Runtime {
                 })),
             );
         }
+        // Module-scope plain functions (M2-T10): bind each as a first-class
+        // `Value::Function` in the global env so components and other
+        // functions can call them. The captured env is the global env
+        // itself (functions see globals + their params).
+        for f in &template.functions {
+            global_env.define(
+                &f.name,
+                Value::Function {
+                    params: f.params.clone(),
+                    body: Box::new(f.body.clone()),
+                    captured: global_env.clone(),
+                    ident: std::rc::Rc::new(()),
+                },
+            );
+        }
         // Module namespaces (M2-T09): bind `@module:{id}` -> a record mapping
         // each exported component name to a `ComponentRefVal` handle, so a
         // dynamic `import("id")` (lowered to `@module:{id}`) resolves to the
@@ -204,7 +223,7 @@ impl Runtime {
             }
             global_env.define(&m.namespace(), Value::Map(ns));
         }
-        Self {
+        let rt = Self {
             global_env,
             template,
             frames: FrameStore::default(),
@@ -215,7 +234,46 @@ impl Runtime {
             log: Vec::new(),
             handlers: HashMap::new(),
             scheduler: Scheduler::new(),
+            modules_initialized: false,
+        };
+        // NOTE: top-level `let`/`const` (T09b) evaluate lazily at the first
+        // `flush` (see `ensure_modules_initialized`), keeping `new`
+        // infallible.
+        rt
+    }
+
+    /// Evaluate `template.top_levels` in order, defining each name in the
+    /// global env (module initialization, T09b). Runs once, at the first
+    /// `flush`: a throwing top-level surfaces as a flush error, exactly like
+    /// a render error — observable, never a silent partial init.
+    fn ensure_modules_initialized(&mut self) -> Result<(), RuntimeError> {
+        if self.modules_initialized {
+            return Ok(());
         }
+        self.modules_initialized = true;
+        // Split borrows: template (read) vs global_env/log (write).
+        let (tls, components) = (
+            self.template.top_levels.clone(),
+            self.template.components.clone(),
+        );
+        for (name, expr) in &tls {
+            // Each binding evaluates with a throwaway frame (no hooks at
+            // module scope — a hook call here is a precise runtime error
+            // from the hook machinery, not a silent success).
+            let mut host = LogHost { log: &mut self.log };
+            let mut frame = HookFrame::default();
+            let mut effects = Vec::new();
+            let v = eval(
+                expr,
+                &mut self.global_env,
+                &mut frame,
+                &mut host,
+                &components,
+                &mut effects,
+            )?;
+            self.global_env.define(name, v);
+        }
+        Ok(())
     }
 
     pub fn template(&self) -> &RuntimeTemplate {
@@ -233,6 +291,8 @@ impl Runtime {
     /// loops. After the loop the handler table reflects the final tree, so
     /// `dispatch` can fire events against it.
     pub fn flush(&mut self) -> Result<Vec<Patch>, RuntimeError> {
+        // Module initialization (T09b) runs once, before the first render.
+        self.ensure_modules_initialized()?;
         let mut all = Vec::new();
         // First pass: the initial (or post-dispatch) render.
         self.render_once(&mut all)?;
@@ -329,6 +389,9 @@ impl Runtime {
     /// calls a state setter, the frame is marked dirty, and the flush below
     /// re-renders and emits the minimal patches.
     pub fn dispatch(&mut self, node: NodeId, event: &str) -> Result<Vec<Patch>, RuntimeError> {
+        // A dispatch without a prior flush still needs module init first
+        // (handlers close over globals).
+        self.ensure_modules_initialized()?;
         let (_, handler) = self
             .handlers
             .get(&node)
@@ -745,11 +808,17 @@ fn render_node(
                     )?;
                 }
                 let mut cenv = Env::child_of(env);
-                for (p, v) in comp
-                    .params
-                    .iter()
-                    .zip(prop_vals.into_iter().map(|(_, v)| v))
-                {
+                // Params bind BY PROP NAME (React semantics): each declared
+                // param takes the same-named passed prop; missing props are
+                // `undefined` (param defaults apply in the bindings below).
+                // Props passed but not declared are ignored (no `props`
+                // object in the explicit-params model).
+                for p in &comp.params {
+                    let v = prop_vals
+                        .iter()
+                        .find(|(n, _)| n == p)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or(Value::Undefined);
                     cenv.define(p, v);
                 }
                 let mut ceffects: Vec<EffectJob> = Vec::new();

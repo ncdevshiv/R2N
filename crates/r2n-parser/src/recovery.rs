@@ -17,7 +17,8 @@ use r2n_ast::expr::{Element, Expr, Prop};
 use r2n_ast::lit::Literal;
 use r2n_ast::op::{BinOp, UnOp};
 use r2n_ast::program::{
-    ClassComponent, Component, Decl, ExportNamed, Import, Method, Program, Stmt,
+    ClassComponent, Component, Decl, DeclKind, ExportDecl, ExportNamed, FuncDecl, Import, Method,
+    ObjectProp, Param, Pattern, Program, Stmt,
 };
 
 /// The result of a recovering parse: a program (partial if any error
@@ -33,20 +34,88 @@ impl Recovered {
     }
 }
 
-/// Parse `src`, collecting every recoverable error instead of stopping at
-/// the first. Lexer-level failures (unterminated string/comment) are still
-/// fatal: there is no sane position to resume tokenization from.
-pub fn parse_with_recovery(src: &str) -> Result<Recovered, ParseError> {
+/// Tokenize `src`, driving the template chunk protocol inline: after a
+/// TemplateStart, pull chunks via `lex_template_chunk`; after each
+/// interpolation-closing `}`, resume chunks. Brace depth tracks when a `}`
+/// closes an interpolation (next is chunk text) vs ordinary code. Nested
+/// templates recurse. Without this, a raw `next_token` loop would lex `${`
+/// chunk text as normal tokens (`$` → error).
+fn lex_all_with_templates(src: &str) -> Result<Vec<Token>, ParseError> {
     let mut lexer = Lexer::new(src)?;
-    let mut tokens = Vec::new();
+    let mut tokens: Vec<Token> = Vec::new();
+    // Stack of brace depths at which each open `${` started: a `}` seen at
+    // exactly that depth closes the interpolation.
+    let mut interp_stack: Vec<usize> = Vec::new();
+    let mut brace_depth: usize = 0;
+    // Chunk-mode stack: each TemplateStart pushes a frame; TemplateEnd pops.
+    // While non-empty, the next token comes from `lex_template_chunk`.
+    let mut in_template = false;
     loop {
+        if in_template {
+            let chunk = lexer.lex_template_chunk()?;
+            let is_end = matches!(chunk.kind, TokenKind::TemplateEnd);
+            // A chunk ending at the backtick arrives as TemplateText with
+            // the End parked — detect via probe.
+            let mut text_end = false;
+            if matches!(chunk.kind, TokenKind::TemplateText(_)) {
+                let mut probe = lexer.clone();
+                if let Ok(t) = probe.next_token() {
+                    text_end = matches!(t.kind, TokenKind::TemplateEnd);
+                }
+            }
+            tokens.push(chunk);
+            if is_end {
+                in_template = false;
+                continue;
+            }
+            if text_end {
+                tokens.push(lexer.next_token()?);
+                in_template = false;
+                continue;
+            }
+            // Middle chunk: `${` consumed — interpolation expression tokens
+            // follow until the matching `}`.
+            interp_stack.push(brace_depth);
+            in_template = false;
+            continue;
+        }
         let tok = lexer.next_token()?;
         let eof = matches!(tok.kind, TokenKind::Eof);
-        tokens.push(tok);
+        match &tok.kind {
+            TokenKind::TemplateStart => {
+                tokens.push(tok);
+                in_template = true;
+            }
+            TokenKind::LeftBrace => {
+                brace_depth += 1;
+                tokens.push(tok);
+            }
+            TokenKind::RightBrace => {
+                // A `}` at exactly the innermost interpolation's depth closes
+                // it: the next token resumes chunk text.
+                if Some(&brace_depth) == interp_stack.last() {
+                    interp_stack.pop();
+                    tokens.push(tok);
+                    in_template = true;
+                } else {
+                    brace_depth = brace_depth.saturating_sub(1);
+                    tokens.push(tok);
+                }
+            }
+            _ => tokens.push(tok),
+        }
         if eof {
             break;
         }
     }
+    Ok(tokens)
+}
+
+/// Parse `src`, collecting every recoverable error instead of stopping at
+/// the first. Lexer-level failures (unterminated string/comment) are still
+/// fatal: there is no sane position to resume tokenization from.
+pub fn parse_with_recovery(src: &str) -> Result<Recovered, ParseError> {
+    let tokens = lex_all_with_templates(src)?;
 
     let mut errors = Vec::new();
     let mut program = Program::new();
@@ -177,12 +246,226 @@ impl<'e, 'a> SpanParser<'e, 'a> {
             }
             TokenKind::Ident(kw) if kw == "class" => Ok(Decl::Class(self.parse_class()?)),
             TokenKind::Ident(kw) if kw == "export" => self.parse_export(),
-            TokenKind::Ident(kw) if kw == "function" => self.parse_generator_fn(),
+            TokenKind::Ident(kw) if kw == "function" => self.parse_function_decl(),
+            TokenKind::Ident(kw) if kw == "let" || kw == "const" => {
+                let kind = if kw == "let" {
+                    DeclKind::Let
+                } else {
+                    DeclKind::Const
+                };
+                self.bump();
+                let (pattern, value) = self.parse_binding()?;
+                self.expect(TokenKind::Semicolon)?;
+                Ok(Decl::TopLevel {
+                    kind,
+                    pattern,
+                    value,
+                })
+            }
             _ => Err(self.err("expected a declaration (import/component/export)")),
         }
     }
 
+    /// `function name(params) { stmts }` or `function* name(params) { stmts }`
+    /// (mirrors parser.rs).
+    fn parse_function_decl(&mut self) -> Result<Decl, ParseError> {
+        self.bump(); // `function`
+        if self.check(&TokenKind::Star) {
+            return self.parse_generator_fn_tail();
+        }
+        let name = self.expect_ident()?;
+        let params = self.parse_param_patterns()?;
+        let body = self.parse_stmt_block()?;
+        Ok(Decl::FuncDecl(FuncDecl { name, params, body }))
+    }
+
     /// `function* name(params) { stmts }` (mirrors parser.rs).
+    fn parse_generator_fn_tail(&mut self) -> Result<Decl, ParseError> {
+        self.bump(); // `*`
+        let name = self.expect_ident()?;
+        let params = self.parse_param_patterns()?;
+        self.expect(TokenKind::LeftBrace)?;
+        let mut body = Vec::new();
+        while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
+            body.push(self.parse_stmt()?);
+        }
+        self.expect(TokenKind::RightBrace)?;
+        Ok(Decl::GeneratorFn(r2n_ast::program::GeneratorFn {
+            name,
+            params,
+            body,
+        }))
+    }
+
+    /// `(p1, p2, ...)` — full parameter patterns (mirrors parser.rs).
+    fn parse_param_patterns(&mut self) -> Result<Vec<Param>, ParseError> {
+        self.expect(TokenKind::LeftParen)?;
+        let mut params = Vec::new();
+        if !self.check(&TokenKind::RightParen) {
+            params.push(self.parse_param()?);
+            while self.check(&TokenKind::Comma) {
+                self.bump();
+                if self.check(&TokenKind::RightParen) {
+                    break;
+                }
+                params.push(self.parse_param()?);
+            }
+        }
+        self.expect(TokenKind::RightParen)?;
+        for (i, p) in params.iter().enumerate() {
+            if p.rest && i + 1 != params.len() {
+                return Err(self.err("rest parameter must be last"));
+            }
+        }
+        Ok(params)
+    }
+
+    fn parse_param(&mut self) -> Result<Param, ParseError> {
+        if self.check(&TokenKind::DotDotDot) {
+            self.bump();
+            let name = self.expect_ident()?;
+            return Ok(Param {
+                pattern: Pattern::Name {
+                    name,
+                    default: None,
+                },
+                default: None,
+                rest: true,
+            });
+        }
+        let pattern = self.parse_pattern()?;
+        let default = if self.check(&TokenKind::Equals) {
+            self.bump();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+        Ok(Param {
+            pattern,
+            default,
+            rest: false,
+        })
+    }
+
+    /// Plain identifier parameter (kept for error-message parity in
+    /// diagnostics paths).
+    #[allow(dead_code)]
+    fn parse_plain_param(&mut self) -> Result<Param, ParseError> {
+        let name = self.expect_ident()?;
+        Ok(Param {
+            pattern: Pattern::Name {
+                name,
+                default: None,
+            },
+            default: None,
+            rest: false,
+        })
+    }
+
+    fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
+        self.parse_pattern_inner(false)
+    }
+
+    fn parse_binding_pattern(&mut self) -> Result<Pattern, ParseError> {
+        self.parse_pattern_inner(true)
+    }
+
+    fn parse_pattern_inner(&mut self, in_binding: bool) -> Result<Pattern, ParseError> {
+        match &self.cur().kind {
+            TokenKind::LeftBrace => self.parse_object_pattern(),
+            TokenKind::LeftBracket => self.parse_array_pattern(),
+            _ => {
+                let name = self.expect_ident()?;
+                let default = if self.check(&TokenKind::Equals) && !in_binding {
+                    self.bump();
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                Ok(Pattern::Name { name, default })
+            }
+        }
+    }
+
+    fn parse_object_pattern(&mut self) -> Result<Pattern, ParseError> {
+        self.expect(TokenKind::LeftBrace)?;
+        let mut props = Vec::new();
+        let mut rest = None;
+        while !self.check(&TokenKind::RightBrace) {
+            if self.check(&TokenKind::DotDotDot) {
+                self.bump();
+                rest = Some(self.expect_ident()?);
+                if self.check(&TokenKind::Comma) {
+                    self.bump();
+                }
+                break;
+            }
+            let key = self.expect_ident()?;
+            let alias = if self.check(&TokenKind::Colon) {
+                self.bump();
+                Some(self.parse_pattern()?)
+            } else if self.check(&TokenKind::Equals) {
+                self.bump();
+                let d = self.parse_expr()?;
+                Some(Pattern::Name {
+                    name: key.clone(),
+                    default: Some(d),
+                })
+            } else {
+                None
+            };
+            props.push(ObjectProp { key, alias });
+            if self.check(&TokenKind::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenKind::RightBrace)?;
+        Ok(Pattern::Object { props, rest })
+    }
+
+    fn parse_array_pattern(&mut self) -> Result<Pattern, ParseError> {
+        self.expect(TokenKind::LeftBracket)?;
+        let mut items: Vec<Option<Pattern>> = Vec::new();
+        let mut rest = None;
+        while !self.check(&TokenKind::RightBracket) {
+            if self.check(&TokenKind::Comma) {
+                self.bump();
+                items.push(None);
+                continue;
+            }
+            if self.check(&TokenKind::DotDotDot) {
+                self.bump();
+                rest = Some(self.expect_ident()?);
+                if self.check(&TokenKind::Comma) {
+                    self.bump();
+                }
+                break;
+            }
+            items.push(Some(self.parse_pattern()?));
+            if self.check(&TokenKind::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenKind::RightBracket)?;
+        Ok(Pattern::Array { items, rest })
+    }
+
+    fn parse_binding(&mut self) -> Result<(Pattern, Expr), ParseError> {
+        let pattern = self.parse_binding_pattern()?;
+        self.expect(TokenKind::Equals)?;
+        let value = self.parse_expr()?;
+        Ok((pattern, value))
+    }
+
+    /// `function* name(params) { stmts }` (mirrors parser.rs). Kept for
+    /// error-message parity; `parse_function_decl` above handles dispatch.
+    /// Legacy `function*` entry (kept for error-message parity in
+    /// diagnostics tests; `parse_function_decl` handles dispatch).
+    #[allow(dead_code)]
     fn parse_generator_fn(&mut self) -> Result<Decl, ParseError> {
         self.bump(); // `function`
         if !self.check(&TokenKind::Star) {
@@ -191,16 +474,7 @@ impl<'e, 'a> SpanParser<'e, 'a> {
         }
         self.bump(); // `*`
         let name = self.expect_ident()?;
-        self.expect(TokenKind::LeftParen)?;
-        let mut params = Vec::new();
-        if !self.check(&TokenKind::RightParen) {
-            params.push(self.expect_ident()?);
-            while self.check(&TokenKind::Comma) {
-                self.bump();
-                params.push(self.expect_ident()?);
-            }
-        }
-        self.expect(TokenKind::RightParen)?;
+        let params = self.parse_param_patterns()?;
         self.expect(TokenKind::LeftBrace)?;
         let mut body = Vec::new();
         while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
@@ -249,15 +523,7 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                 }
                 if self.check(&TokenKind::LeftParen) {
                     self.bump(); // '('
-                    let mut params = Vec::new();
-                    if !self.check(&TokenKind::RightParen) {
-                        params.push(self.expect_ident()?);
-                        while self.check(&TokenKind::Comma) {
-                            self.bump();
-                            params.push(self.expect_ident()?);
-                        }
-                    }
-                    self.expect(TokenKind::RightParen)?;
+                    let params = self.parse_param_patterns()?;
                     self.expect(TokenKind::LeftBrace)?;
                     let mut body = Vec::new();
                     while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
@@ -418,6 +684,22 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                 self.expect(TokenKind::Semicolon)?;
                 Ok(Decl::ExportNamed(ExportNamed { names }))
             }
+            // `export function name(params) { ... }` — inline-exported
+            // function (mirrors parser.rs).
+            TokenKind::Ident(kw) if kw == "function" => match self.parse_function_decl()? {
+                Decl::FuncDecl(f) => Ok(Decl::ExportDecl(ExportDecl::Function(f))),
+                Decl::GeneratorFn(g) => Ok(Decl::GeneratorFn(g)),
+                _ => unreachable!("parse_function_decl returns FuncDecl/GeneratorFn"),
+            },
+            // `export const name = expr;` / `export let name = expr;`.
+            TokenKind::Ident(kw) if kw == "const" || kw == "let" => {
+                self.bump();
+                let name = self.expect_ident()?;
+                self.expect(TokenKind::Equals)?;
+                let value = self.parse_expr()?;
+                self.expect(TokenKind::Semicolon)?;
+                Ok(Decl::ExportDecl(ExportDecl::Const { name, value }))
+            }
             _ => Err(self.err("expected `default` or `{` after `export`")),
         }
     }
@@ -425,16 +707,7 @@ impl<'e, 'a> SpanParser<'e, 'a> {
     fn parse_component(&mut self) -> Result<Component, ParseError> {
         self.bump(); // "component"
         let name = self.expect_ident()?;
-        self.expect(TokenKind::LeftParen)?;
-        let mut params = Vec::new();
-        if !self.check(&TokenKind::RightParen) {
-            params.push(self.expect_ident()?);
-            while self.check(&TokenKind::Comma) {
-                self.bump();
-                params.push(self.expect_ident()?);
-            }
-        }
-        self.expect(TokenKind::RightParen)?;
+        let params = self.parse_param_patterns()?;
         self.expect(TokenKind::LeftBrace)?;
         let mut body = Vec::new();
         // Statement-level recovery: record each failed statement, re-sync at
@@ -470,32 +743,214 @@ impl<'e, 'a> SpanParser<'e, 'a> {
             match &self.cur().kind {
                 TokenKind::Eof | TokenKind::Semicolon => return,
                 TokenKind::RightBrace => return,
-                TokenKind::Ident(kw) if matches!(kw.as_str(), "let" | "const" | "return") => return,
+                TokenKind::Ident(kw)
+                    if matches!(
+                        kw.as_str(),
+                        "let"
+                            | "const"
+                            | "return"
+                            | "if"
+                            | "while"
+                            | "for"
+                            | "switch"
+                            | "break"
+                            | "continue"
+                    ) =>
+                {
+                    return
+                }
                 _ => self.bump(),
             }
         }
     }
 
+    /// `{ stmts }` — a brace block of statements (mirrors parser.rs).
+    fn parse_stmt_block(&mut self) -> Result<Vec<Stmt>, ParseError> {
+        self.expect(TokenKind::LeftBrace)?;
+        let mut body = Vec::new();
+        while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
+            body.push(self.parse_stmt()?);
+        }
+        self.expect(TokenKind::RightBrace)?;
+        Ok(body)
+    }
+
+    /// A loop/branch body: either a `{ stmts }` block or a single statement.
+    fn parse_stmt_or_block(&mut self) -> Result<Vec<Stmt>, ParseError> {
+        if self.check(&TokenKind::LeftBrace) {
+            self.parse_stmt_block()
+        } else {
+            Ok(vec![self.parse_stmt()?])
+        }
+    }
+
+    /// `for (init; cond; update) body` (mirrors parser.rs).
+    fn parse_for(&mut self) -> Result<Stmt, ParseError> {
+        self.bump(); // `for`
+        self.expect(TokenKind::LeftParen)?;
+        let init = if self.check(&TokenKind::Semicolon) {
+            self.bump();
+            None
+        } else if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "let" || kw == "const") {
+            let kind = match &self.cur().kind {
+                TokenKind::Ident(kw) if kw == "let" => DeclKind::Let,
+                _ => DeclKind::Const,
+            };
+            self.bump();
+            let (pattern, value) = self.parse_binding()?;
+            self.expect(TokenKind::Semicolon)?;
+            let stmt = match pattern {
+                Pattern::Name { name, .. } => match kind {
+                    DeclKind::Let => Stmt::Let { name, value },
+                    DeclKind::Const => Stmt::Const { name, value },
+                },
+                pattern => Stmt::Destructure {
+                    kind,
+                    pattern,
+                    value,
+                },
+            };
+            Some(Box::new(stmt))
+        } else {
+            let e = self.parse_expr()?;
+            self.expect(TokenKind::Semicolon)?;
+            Some(Box::new(Stmt::Expr(e)))
+        };
+        let cond = if self.check(&TokenKind::Semicolon) {
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
+        self.expect(TokenKind::Semicolon)?;
+        let update = if self.check(&TokenKind::RightParen) {
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
+        self.expect(TokenKind::RightParen)?;
+        let body = self.parse_stmt_or_block()?;
+        Ok(Stmt::For {
+            init,
+            cond,
+            update,
+            body,
+        })
+    }
+
+    /// `switch (disc) { case e: stmts...; default: stmts... }` (mirrors
+    /// parser.rs).
+    fn parse_switch(&mut self) -> Result<Stmt, ParseError> {
+        self.bump(); // `switch`
+        self.expect(TokenKind::LeftParen)?;
+        let disc = self.parse_expr()?;
+        self.expect(TokenKind::RightParen)?;
+        self.expect(TokenKind::LeftBrace)?;
+        let mut cases = Vec::new();
+        while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
+            if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "case") {
+                self.bump();
+                let test = self.parse_expr()?;
+                self.expect(TokenKind::Colon)?;
+                let mut body = Vec::new();
+                while !self.check(&TokenKind::RightBrace)
+                    && !matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "case" || kw == "default")
+                    && !self.check(&TokenKind::Eof)
+                {
+                    body.push(self.parse_stmt()?);
+                }
+                cases.push((Some(test), body));
+            } else if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "default") {
+                self.bump();
+                self.expect(TokenKind::Colon)?;
+                let mut body = Vec::new();
+                while !self.check(&TokenKind::RightBrace)
+                    && !matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "case" || kw == "default")
+                    && !self.check(&TokenKind::Eof)
+                {
+                    body.push(self.parse_stmt()?);
+                }
+                cases.push((None, body));
+            } else {
+                return Err(self.err("expected `case` or `default` in switch body"));
+            }
+        }
+        self.expect(TokenKind::RightBrace)?;
+        Ok(Stmt::Switch { disc, cases })
+    }
+
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         match &self.cur().kind {
-            TokenKind::Ident(kw) if kw == "let" => {
+            TokenKind::Ident(kw) if kw == "let" || kw == "const" => {
+                let kind = if kw == "let" {
+                    DeclKind::Let
+                } else {
+                    DeclKind::Const
+                };
                 self.bump();
-                let name = self.expect_ident()?;
-                self.expect(TokenKind::Equals)?;
-                let value = self.parse_expr()?;
+                let (pattern, value) = self.parse_binding()?;
                 self.expect(TokenKind::Semicolon)?;
-                Ok(Stmt::Let { name, value })
+                match pattern {
+                    Pattern::Name {
+                        name,
+                        default: None,
+                    } => match kind {
+                        DeclKind::Let => Ok(Stmt::Let { name, value }),
+                        DeclKind::Const => Ok(Stmt::Const { name, value }),
+                    },
+                    Pattern::Name { name, .. } => match kind {
+                        DeclKind::Let => Ok(Stmt::Let { name, value }),
+                        DeclKind::Const => Ok(Stmt::Const { name, value }),
+                    },
+                    pattern => Ok(Stmt::Destructure {
+                        kind,
+                        pattern,
+                        value,
+                    }),
+                }
             }
-            TokenKind::Ident(kw) if kw == "const" => {
+            TokenKind::Ident(kw) if kw == "if" => {
                 self.bump();
-                let name = self.expect_ident()?;
-                self.expect(TokenKind::Equals)?;
-                let value = self.parse_expr()?;
+                self.expect(TokenKind::LeftParen)?;
+                let cond = self.parse_expr()?;
+                self.expect(TokenKind::RightParen)?;
+                let then = self.parse_stmt_or_block()?;
+                let else_ = if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "else") {
+                    self.bump();
+                    Some(self.parse_stmt_or_block()?)
+                } else {
+                    None
+                };
+                Ok(Stmt::If { cond, then, else_ })
+            }
+            TokenKind::Ident(kw) if kw == "while" => {
+                self.bump();
+                self.expect(TokenKind::LeftParen)?;
+                let cond = self.parse_expr()?;
+                self.expect(TokenKind::RightParen)?;
+                let body = self.parse_stmt_or_block()?;
+                Ok(Stmt::While { cond, body })
+            }
+            TokenKind::Ident(kw) if kw == "for" => self.parse_for(),
+            TokenKind::Ident(kw) if kw == "switch" => self.parse_switch(),
+            TokenKind::Ident(kw) if kw == "break" => {
+                self.bump();
                 self.expect(TokenKind::Semicolon)?;
-                Ok(Stmt::Const { name, value })
+                Ok(Stmt::Break)
+            }
+            TokenKind::Ident(kw) if kw == "continue" => {
+                self.bump();
+                self.expect(TokenKind::Semicolon)?;
+                Ok(Stmt::Continue)
             }
             TokenKind::Ident(kw) if kw == "return" => {
                 self.bump();
+                // Bare `return;` returns `undefined` (mirrors parser.rs).
+                if self.check(&TokenKind::Semicolon) {
+                    self.bump();
+                    return Ok(Stmt::Return(Expr::Literal(
+                        r2n_ast::lit::Literal::Undefined,
+                    )));
+                }
                 let value = self.parse_expr()?;
                 // In JSX body form a trailing `;` is optional (strict parity).
                 if self.check(&TokenKind::Semicolon) {
@@ -521,7 +976,31 @@ impl<'e, 'a> SpanParser<'e, 'a> {
 
     /// `target = value` — right-associative (mirrors parser.rs).
     fn parse_assign(&mut self) -> Result<Expr, ParseError> {
-        let target = self.parse_ternary()?;
+        let target = self.parse_nullish()?;
+        let compound = match &self.cur().kind {
+            TokenKind::PlusEq => Some(BinOp::Add),
+            TokenKind::MinusEq => Some(BinOp::Sub),
+            TokenKind::StarEq => Some(BinOp::Mul),
+            TokenKind::SlashEq => Some(BinOp::Div),
+            TokenKind::PercentEq => Some(BinOp::Mod),
+            _ => None,
+        };
+        if let Some(op) = compound {
+            let is_assignable = matches!(&target, Expr::Ident { .. } | Expr::Member { .. });
+            if !is_assignable {
+                return Err(self.err("assignment target must be an identifier or a member access"));
+            }
+            self.bump();
+            let value = self.parse_assign()?;
+            return Ok(Expr::Assign {
+                target: Box::new(target.clone()),
+                value: Box::new(Expr::Binary {
+                    op,
+                    left: Box::new(target),
+                    right: Box::new(value),
+                }),
+            });
+        }
         if self.check(&TokenKind::Equals) {
             let is_assignable = matches!(&target, Expr::Ident { .. } | Expr::Member { .. });
             if !is_assignable {
@@ -535,6 +1014,21 @@ impl<'e, 'a> SpanParser<'e, 'a> {
             });
         }
         Ok(target)
+    }
+
+    /// `a ?? b` (mirrors parser.rs).
+    fn parse_nullish(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_ternary()?;
+        while self.check(&TokenKind::QuestionQuestion) {
+            self.bump();
+            let right = self.parse_ternary()?;
+            left = Expr::Binary {
+                op: BinOp::Nullish,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
     }
 
     fn parse_ternary(&mut self) -> Result<Expr, ParseError> {
@@ -555,12 +1049,27 @@ impl<'e, 'a> SpanParser<'e, 'a> {
     }
 
     fn parse_or(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_and()?;
+        let mut left = self.parse_bitor()?;
         while self.check(&TokenKind::PipePipe) {
+            self.bump();
+            let right = self.parse_bitor()?;
+            left = Expr::Binary {
+                op: BinOp::Or,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
+    }
+
+    /// `a | b` — bitwise OR (mirrors parser.rs).
+    fn parse_bitor(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_and()?;
+        while self.check(&TokenKind::Pipe) {
             self.bump();
             let right = self.parse_and()?;
             left = Expr::Binary {
-                op: BinOp::Or,
+                op: BinOp::BitOr,
                 left: Box::new(left),
                 right: Box::new(right),
             };
@@ -697,42 +1206,44 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                         prop,
                     };
                 }
+                // Postfix `x++` / `x--` (mirrors parser.rs).
+                TokenKind::PlusPlus | TokenKind::MinusMinus => {
+                    let op = match &self.cur().kind {
+                        TokenKind::PlusPlus => r2n_ast::expr::UpdateOp::Inc,
+                        _ => r2n_ast::expr::UpdateOp::Dec,
+                    };
+                    let is_assignable = matches!(&expr, Expr::Ident { .. } | Expr::Member { .. });
+                    if !is_assignable {
+                        return Err(
+                            self.err("update target must be an identifier or a member access")
+                        );
+                    }
+                    self.bump();
+                    expr = Expr::Update {
+                        op,
+                        target: Box::new(expr),
+                        prefix: false,
+                    };
+                }
                 TokenKind::LeftParen => {
                     if self.arrow_follows() {
                         // `(params) => body` as the sole call argument,
                         // e.g. `items.map((x) => <li/>)`.
                         self.bump(); // '('
-                        let mut params = Vec::new();
-                        if !self.check(&TokenKind::RightParen) {
-                            params.push(self.expect_ident()?);
-                            while self.check(&TokenKind::Comma) {
-                                self.bump();
-                                params.push(self.expect_ident()?);
-                            }
-                        }
-                        self.expect(TokenKind::RightParen)?;
+                        let params = self.parse_arrow_params()?;
                         self.expect(TokenKind::Arrow)?;
                         let body = self.parse_arrow_body()?;
                         expr = Expr::Call {
                             callee: Box::new(expr),
-                            args: vec![Expr::Arrow {
+                            args: vec![r2n_ast::expr::CallArg::Expr(Expr::Arrow {
                                 params,
                                 body: Box::new(body),
                                 async_: false,
-                            }],
+                            })],
                         };
                         self.expect(TokenKind::RightParen)?;
                     } else {
-                        self.bump();
-                        let mut args = Vec::new();
-                        if !self.check(&TokenKind::RightParen) {
-                            args.push(self.parse_expr()?);
-                            while self.check(&TokenKind::Comma) {
-                                self.bump();
-                                args.push(self.parse_expr()?);
-                            }
-                        }
-                        self.expect(TokenKind::RightParen)?;
+                        let args = self.parse_call_args()?;
                         expr = Expr::Call {
                             callee: Box::new(expr),
                             args,
@@ -748,7 +1259,7 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                             base: Box::new(expr),
                             prop: "get".to_string(),
                         }),
-                        args: vec![idx],
+                        args: vec![r2n_ast::expr::CallArg::Expr(idx)],
                     };
                 }
                 _ => break,
@@ -796,19 +1307,53 @@ impl<'e, 'a> SpanParser<'e, 'a> {
         if !self.check(&TokenKind::LeftParen) {
             return false;
         }
+        // Depth-tracked scan accepting full patterns (mirrors parser.rs's
+        // looks_like_arrow): idents, braces/brackets, `...`, `=`, `:` and
+        // nested literals; the `)` at depth 0 must be followed by `=>`.
         let mut j = self.pos + 1;
+        let mut depth = 0usize;
         loop {
             match self.tokens.get(j).map(|t| &t.kind) {
-                Some(TokenKind::Ident(_)) | Some(TokenKind::Comma) => j += 1,
-                Some(TokenKind::RightParen) => {
+                Some(TokenKind::LeftParen)
+                | Some(TokenKind::LeftBrace)
+                | Some(TokenKind::LeftBracket) => {
+                    depth += 1;
+                    j += 1;
+                }
+                Some(TokenKind::RightParen) if depth == 0 => {
                     return matches!(
                         self.tokens.get(j + 1).map(|t| &t.kind),
                         Some(TokenKind::Arrow)
                     );
                 }
+                Some(TokenKind::RightParen)
+                | Some(TokenKind::RightBrace)
+                | Some(TokenKind::RightBracket) => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                    j += 1;
+                }
+                Some(TokenKind::Ident(_))
+                | Some(TokenKind::Comma)
+                | Some(TokenKind::DotDotDot)
+                | Some(TokenKind::Equals)
+                | Some(TokenKind::Colon)
+                | Some(TokenKind::Int(_))
+                | Some(TokenKind::Float(_))
+                | Some(TokenKind::String(_)) => j += 1,
                 _ => return false,
             }
         }
+    }
+
+    /// Lookahead: is the current ident immediately followed by `=>`?
+    fn ident_arrow_follows(&self) -> bool {
+        matches!(
+            self.tokens.get(self.pos + 1).map(|t| &t.kind),
+            Some(TokenKind::Arrow)
+        )
     }
 
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
@@ -837,16 +1382,7 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                 // `new Callee(args...)` (mirrors parser.rs).
                 self.bump();
                 let callee = self.expect_ident()?;
-                self.expect(TokenKind::LeftParen)?;
-                let mut args = Vec::new();
-                if !self.check(&TokenKind::RightParen) {
-                    args.push(self.parse_expr()?);
-                    while self.check(&TokenKind::Comma) {
-                        self.bump();
-                        args.push(self.parse_expr()?);
-                    }
-                }
-                self.expect(TokenKind::RightParen)?;
+                let args = self.parse_call_args()?;
                 Ok(Expr::New {
                     callee: Box::new(Expr::Ident {
                         name: callee,
@@ -862,15 +1398,7 @@ impl<'e, 'a> SpanParser<'e, 'a> {
             TokenKind::LeftParen => {
                 if self.arrow_follows() {
                     self.bump(); // '('
-                    let mut params = Vec::new();
-                    if !self.check(&TokenKind::RightParen) {
-                        params.push(self.expect_ident()?);
-                        while self.check(&TokenKind::Comma) {
-                            self.bump();
-                            params.push(self.expect_ident()?);
-                        }
-                    }
-                    self.expect(TokenKind::RightParen)?;
+                    let params = self.parse_arrow_params()?;
                     self.expect(TokenKind::Arrow)?;
                     let body = self.parse_arrow_body()?;
                     Ok(Expr::Arrow {
@@ -885,23 +1413,77 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                     Ok(e)
                 }
             }
+            // Single-ident arrow: `x => expr` (mirrors parser.rs).
+            TokenKind::Ident(name)
+                if !matches!(
+                    name.as_str(),
+                    "async"
+                        | "await"
+                        | "yield"
+                        | "throw"
+                        | "try"
+                        | "if"
+                        | "else"
+                        | "new"
+                        | "import"
+                        | "typeof"
+                        | "true"
+                        | "false"
+                        | "null"
+                        | "undefined"
+                        | "this"
+                        | "case"
+                        | "default"
+                        | "return"
+                        | "let"
+                        | "const"
+                        | "while"
+                        | "for"
+                        | "switch"
+                        | "break"
+                        | "continue"
+                        | "function"
+                        | "class"
+                        | "export"
+                        | "from"
+                        | "as"
+                ) && self.ident_arrow_follows() =>
+            {
+                let n = name.clone();
+                self.bump();
+                self.expect(TokenKind::Arrow)?;
+                let body = self.parse_arrow_body()?;
+                Ok(Expr::Arrow {
+                    params: vec![Param {
+                        pattern: Pattern::Name {
+                            name: n,
+                            default: None,
+                        },
+                        default: None,
+                        rest: false,
+                    }],
+                    body: Box::new(body),
+                    async_: false,
+                })
+            }
             TokenKind::Ident(name) if name == "async" && self.async_arrow_follows() => {
                 // `async (params) => body` / `async x => body` (mirrors parser.rs).
                 self.bump(); // `async`
-                let mut params = Vec::new();
-                if self.check(&TokenKind::LeftParen) {
+                let params = if self.check(&TokenKind::LeftParen) {
                     self.bump();
-                    if !self.check(&TokenKind::RightParen) {
-                        params.push(self.expect_ident()?);
-                        while self.check(&TokenKind::Comma) {
-                            self.bump();
-                            params.push(self.expect_ident()?);
-                        }
-                    }
+                    let ps = self.parse_arrow_params_inner()?;
                     self.expect(TokenKind::RightParen)?;
+                    ps
                 } else {
-                    params.push(self.expect_ident()?);
-                }
+                    vec![Param {
+                        pattern: Pattern::Name {
+                            name: self.expect_ident()?,
+                            default: None,
+                        },
+                        default: None,
+                        rest: false,
+                    }]
+                };
                 self.expect(TokenKind::Arrow)?;
                 let body = self.parse_arrow_body()?;
                 Ok(Expr::Arrow {
@@ -918,6 +1500,19 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                     value: Box::new(value),
                     from_return: false,
                 })
+            }
+            TokenKind::Ident(name) if name == "function" => {
+                // `function Name?(params) { stmts }` in expression position
+                // (mirrors parser.rs).
+                self.bump(); // `function`
+                let name = if matches!(&self.cur().kind, TokenKind::Ident(_)) {
+                    Some(self.expect_ident()?)
+                } else {
+                    None
+                };
+                let params = self.parse_param_patterns()?;
+                let body = self.parse_stmt_block()?;
+                Ok(Expr::Function { name, params, body })
             }
             TokenKind::Ident(name) if name == "yield" => {
                 // `yield` / `yield expr` (mirrors parser.rs).
@@ -1002,9 +1597,120 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                 Ok(Expr::Ident { name, is_component })
             }
             TokenKind::LeftBracket => self.parse_array(),
+            TokenKind::LeftBrace => self.parse_object(),
+            TokenKind::TemplateStart => self.parse_template(),
             TokenKind::Lt => self.parse_element(),
             other => Err(self.err(&format!("unexpected {} in expression", other.describe()))),
         }
+    }
+
+    /// `{key: value, shorthand, ...spread}` (mirrors parser.rs).
+    fn parse_object(&mut self) -> Result<Expr, ParseError> {
+        use r2n_ast::expr::ObjectItem;
+        self.expect(TokenKind::LeftBrace)?;
+        let mut items = Vec::new();
+        while !self.check(&TokenKind::RightBrace) {
+            if self.check(&TokenKind::DotDotDot) {
+                self.bump();
+                items.push(ObjectItem::Spread(self.parse_expr()?));
+            } else {
+                let key = match &self.cur().kind {
+                    TokenKind::String(s) => {
+                        let k = s.clone();
+                        self.bump();
+                        k
+                    }
+                    _ => self.expect_ident()?,
+                };
+                if self.check(&TokenKind::Colon) {
+                    self.bump();
+                    items.push(ObjectItem::Prop(key, self.parse_expr()?));
+                } else {
+                    items.push(ObjectItem::Shorthand(key));
+                }
+            }
+            if self.check(&TokenKind::Comma) {
+                self.bump();
+                if self.check(&TokenKind::RightBrace) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenKind::RightBrace)?;
+        Ok(Expr::Object(items))
+    }
+
+    /// `` `head${expr}tail` `` (mirrors parser.rs). The recovery twin works
+    /// over a flat token list, so template chunks arrive pre-lexed as
+    /// TemplateText/TemplateEnd tokens — no `lex_template_chunk` calls.
+    fn parse_template(&mut self) -> Result<Expr, ParseError> {
+        self.bump(); // TemplateStart
+        let mut parts = Vec::new();
+        let mut exprs = Vec::new();
+        loop {
+            match &self.cur().kind {
+                TokenKind::TemplateText(text) => {
+                    let text = text.clone();
+                    self.bump();
+                    parts.push(text);
+                    // Middle chunk: an expression follows (it ends at `}`).
+                    // Trailing chunk: TemplateEnd follows directly.
+                    if self.check(&TokenKind::TemplateEnd) {
+                        continue;
+                    }
+                    let e = self.parse_expr()?;
+                    self.expect(TokenKind::RightBrace)?;
+                    exprs.push(e);
+                }
+                TokenKind::TemplateEnd => {
+                    self.bump();
+                    // A template ending in an interpolation has no trailing
+                    // text: the last pushed part belongs to the previous
+                    // chunk... reconcile counts: parts must be exprs+1.
+                    while parts.len() <= exprs.len() {
+                        parts.push(String::new());
+                    }
+                    break;
+                }
+                _ => return Err(self.err("expected template text or end of template")),
+            }
+        }
+        Ok(Expr::Template { parts, exprs })
+    }
+
+    /// Arrow params after `(` was consumed: full patterns (mirrors parser.rs).
+    fn parse_arrow_params(&mut self) -> Result<Vec<Param>, ParseError> {
+        let mut params = Vec::new();
+        if !self.check(&TokenKind::RightParen) {
+            params.push(self.parse_param()?);
+            while self.check(&TokenKind::Comma) {
+                self.bump();
+                if self.check(&TokenKind::RightParen) {
+                    break;
+                }
+                params.push(self.parse_param()?);
+            }
+        }
+        self.expect(TokenKind::RightParen)?;
+        Ok(params)
+    }
+
+    /// Same, for the async-arrow path where `(` was already consumed.
+    fn parse_arrow_params_inner(&mut self) -> Result<Vec<Param>, ParseError> {
+        let mut params = Vec::new();
+        if !self.check(&TokenKind::RightParen) {
+            params.push(self.parse_param()?);
+            while self.check(&TokenKind::Comma) {
+                self.bump();
+                if self.check(&TokenKind::RightParen) {
+                    break;
+                }
+                params.push(self.parse_param()?);
+            }
+        }
+        Ok(params)
     }
 
     fn parse_arrow_body(&mut self) -> Result<Expr, ParseError> {
@@ -1035,24 +1741,16 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                     }
                     break;
                 }
-                // `let`/`const` inside a block-bodied arrow: a scoped local
-                // (mirrors parser.rs).
+                // `let`/`const` (incl. destructuring) inside a block-bodied
+                // arrow: scoped locals (mirrors parser.rs).
                 if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "let" || kw == "const")
                 {
                     self.bump();
-                    let name = self.expect_ident()?;
-                    self.expect(TokenKind::Equals)?;
-                    let value = self.parse_expr()?;
+                    let (pattern, value) = self.parse_binding()?;
                     if self.check(&TokenKind::Semicolon) {
                         self.bump();
                     }
-                    stmts.push(Expr::Assign {
-                        target: Box::new(Expr::Ident {
-                            name,
-                            is_component: false,
-                        }),
-                        value: Box::new(value),
-                    });
+                    stmts.push(lower_binding_to_assign(pattern, value));
                     continue;
                 }
                 stmts.push(self.parse_expr()?);
@@ -1095,19 +1793,11 @@ impl<'e, 'a> SpanParser<'e, 'a> {
             }
             if matches!(&self.cur().kind, TokenKind::Ident(kw) if kw == "let" || kw == "const") {
                 self.bump();
-                let name = self.expect_ident()?;
-                self.expect(TokenKind::Equals)?;
-                let value = self.parse_expr()?;
+                let (pattern, value) = self.parse_binding()?;
                 if self.check(&TokenKind::Semicolon) {
                     self.bump();
                 }
-                stmts.push(Expr::Assign {
-                    target: Box::new(Expr::Ident {
-                        name,
-                        is_component: false,
-                    }),
-                    value: Box::new(value),
-                });
+                stmts.push(lower_binding_to_assign(pattern, value));
                 continue;
             }
             stmts.push(self.parse_expr()?);
@@ -1152,17 +1842,54 @@ impl<'e, 'a> SpanParser<'e, 'a> {
         self.expect(TokenKind::LeftBracket)?;
         let mut items = Vec::new();
         if !self.check(&TokenKind::RightBracket) {
-            items.push(self.parse_expr()?);
+            items.push(self.parse_array_item()?);
             while self.check(&TokenKind::Comma) {
                 self.bump();
                 if self.check(&TokenKind::RightBracket) {
                     break; // trailing comma
                 }
-                items.push(self.parse_expr()?);
+                items.push(self.parse_array_item()?);
             }
         }
         self.expect(TokenKind::RightBracket)?;
         Ok(Expr::Array(items))
+    }
+
+    fn parse_array_item(&mut self) -> Result<r2n_ast::expr::ArrayItem, ParseError> {
+        if self.check(&TokenKind::DotDotDot) {
+            self.bump();
+            Ok(r2n_ast::expr::ArrayItem::Spread(self.parse_expr()?))
+        } else {
+            Ok(r2n_ast::expr::ArrayItem::Expr(self.parse_expr()?))
+        }
+    }
+
+    /// `(args...)` — parenthesized call arguments with `...spread` and
+    /// trailing-comma support. Consumes both parens.
+    fn parse_call_args(&mut self) -> Result<Vec<r2n_ast::expr::CallArg>, ParseError> {
+        self.expect(TokenKind::LeftParen)?;
+        let mut args = Vec::new();
+        if !self.check(&TokenKind::RightParen) {
+            args.push(self.parse_call_arg()?);
+            while self.check(&TokenKind::Comma) {
+                self.bump();
+                if self.check(&TokenKind::RightParen) {
+                    break;
+                }
+                args.push(self.parse_call_arg()?);
+            }
+        }
+        self.expect(TokenKind::RightParen)?;
+        Ok(args)
+    }
+
+    fn parse_call_arg(&mut self) -> Result<r2n_ast::expr::CallArg, ParseError> {
+        if self.check(&TokenKind::DotDotDot) {
+            self.bump();
+            Ok(r2n_ast::expr::CallArg::Spread(self.parse_expr()?))
+        } else {
+            Ok(r2n_ast::expr::CallArg::Expr(self.parse_expr()?))
+        }
     }
 
     fn parse_element(&mut self) -> Result<Expr, ParseError> {
@@ -1206,8 +1933,16 @@ impl<'e, 'a> SpanParser<'e, 'a> {
                     break;
                 }
                 TokenKind::Ident(name) => {
-                    let pname = name.clone();
+                    // Attribute names may contain dashes (`data-testid`,
+                    // `aria-label`): consume `-ident` segments (mirrors
+                    // parser.rs).
+                    let mut pname = name.clone();
                     self.bump();
+                    while self.check(&TokenKind::Minus) {
+                        self.bump();
+                        pname.push('-');
+                        pname.push_str(&self.expect_ident()?);
+                    }
                     if self.check(&TokenKind::Equals) {
                         self.bump();
                         if self.check(&TokenKind::LeftBrace) {
@@ -1305,5 +2040,40 @@ impl<'e, 'a> SpanParser<'e, 'a> {
             props,
             children,
         }))
+    }
+}
+
+/// Wrap a plain identifier as a `Param` (kept for error-message parity in
+/// diagnostics paths).
+#[allow(dead_code)]
+fn plain_param(name: String) -> Param {
+    Param {
+        pattern: Pattern::Name {
+            name,
+            default: None,
+        },
+        default: None,
+        rest: false,
+    }
+}
+
+/// Lower a `let`/`const` binding to an assignment expression for block bodies
+/// (mirrors parser.rs).
+fn lower_binding_to_assign(pattern: Pattern, value: Expr) -> Expr {
+    match pattern {
+        Pattern::Name { name, .. } => Expr::Assign {
+            target: Box::new(Expr::Ident {
+                name,
+                is_component: false,
+            }),
+            value: Box::new(value),
+        },
+        _ => Expr::Assign {
+            target: Box::new(Expr::Ident {
+                name: "$bind".to_string(),
+                is_component: false,
+            }),
+            value: Box::new(value),
+        },
     }
 }

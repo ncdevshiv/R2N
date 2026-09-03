@@ -113,6 +113,29 @@ pub trait Host {
     fn log(&mut self, line: &str);
 }
 
+/// Evaluate a function-like body to its completion value: a `return v`
+/// raised anywhere inside (plain functions, closures, map/filter/every
+/// callbacks, reducers, handlers, memo factories, effect bodies) completes
+/// the CURRENT unit with v (JS `return` semantics). Any other error
+/// propagates unchanged.
+#[allow(clippy::too_many_arguments)]
+pub fn eval_function_body(
+    body: &JsExpr,
+    env: &mut Env,
+    frame: &mut HookFrame,
+    host: &mut dyn Host,
+    components: &[RuntimeComponent],
+    effects: &mut Vec<EffectJob>,
+) -> Result<Value, RuntimeError> {
+    match eval(body, env, frame, host, components, effects) {
+        Ok(v) => Ok(v),
+        Err(e) => match e.return_value() {
+            Some(v) => Ok(v),
+            None => Err(e),
+        },
+    }
+}
+
 /// Evaluate a JS expression in the given environment/frame/host.
 #[allow(clippy::too_many_arguments)]
 pub fn eval(
@@ -259,35 +282,8 @@ pub fn eval(
                 }
                 JsExpr::Get { base, prop } => {
                     let b = eval(base, env, frame, host, components, effects)?;
-                    match (&b, prop.as_str()) {
-                        // `ref.current = v` writes the frame slot (persists
-                        // across renders without re-render).
-                        (Value::Ref { slot }, "current") => {
-                            frame.write_ref(*slot, v.clone());
-                            Ok(v)
-                        }
-                        // Object member writes set an OWN property (ECMA
-                        // data-prop creation). `__proto__ = proto` sets the
-                        // chain link (null clears it).
-                        (Value::Object(o), "__proto__") => {
-                            let mut b = o.borrow_mut();
-                            b.proto = match &v {
-                                Value::Object(p) => Some(p.clone()),
-                                Value::Null => None,
-                                _ => {
-                                    return Err(RuntimeError::new(
-                                        "__proto__ must be an object or null",
-                                    ))
-                                }
-                            };
-                            Ok(v)
-                        }
-                        (Value::Object(o), p) => {
-                            o.borrow_mut().set_own(p.to_string(), v.clone());
-                            Ok(v)
-                        }
-                        _ => Err(RuntimeError::new(format!("cannot assign to {prop} on {b}"))),
-                    }
+                    write_prop(&b, prop, v.clone(), frame)?;
+                    Ok(v)
                 }
                 other => Err(RuntimeError::new(format!(
                     "cannot assign to unsupported target {other:?}"
@@ -304,9 +300,170 @@ pub fn eval(
         JsExpr::Array(items) => {
             let mut out = Vec::with_capacity(items.len());
             for it in items {
-                out.push(eval(it, env, frame, host, components, effects)?);
+                match it {
+                    r2n_ir::js::JsArrayItem::Expr(e) => {
+                        out.push(eval(e, env, frame, host, components, effects)?);
+                    }
+                    r2n_ir::js::JsArrayItem::Spread(e) => {
+                        let v = eval(e, env, frame, host, components, effects)?;
+                        match v {
+                            Value::Array(items) => out.extend(items),
+                            other => {
+                                return Err(RuntimeError::new(format!(
+                                    "spread of non-array in array literal: {other}"
+                                )))
+                            }
+                        }
+                    }
+                }
             }
             Ok(Value::Array(out))
+        }
+        JsExpr::Object(items) => {
+            use std::collections::BTreeMap;
+            let mut props = BTreeMap::new();
+            for it in items {
+                match it {
+                    r2n_ir::js::JsObjectItem::Shorthand(name) => {
+                        let v = env.get(name)?;
+                        props.insert(name.clone(), v);
+                    }
+                    r2n_ir::js::JsObjectItem::Prop(k, v) => {
+                        let val = eval(v, env, frame, host, components, effects)?;
+                        props.insert(k.clone(), val);
+                    }
+                    r2n_ir::js::JsObjectItem::Spread(e) => {
+                        let v = eval(e, env, frame, host, components, effects)?;
+                        match v {
+                            Value::Object(o) => {
+                                for (k, val) in o.borrow().props.iter() {
+                                    props.insert(k.clone(), val.clone());
+                                }
+                            }
+                            Value::Map(m) => {
+                                for (k, val) in m.iter() {
+                                    props.insert(k.clone(), val.clone());
+                                }
+                            }
+                            other => {
+                                return Err(RuntimeError::new(format!(
+                                    "spread of non-object in object literal: {other}"
+                                )))
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
+                crate::value::ObjData { props, proto: None },
+            ))))
+        }
+        JsExpr::While { cond, body, step } => {
+            loop {
+                let c = eval(cond, env, frame, host, components, effects)?;
+                if !c.is_truthy() {
+                    break;
+                }
+                // `step` (a `for` update) runs after every iteration
+                // INCLUDING `continue`, but NOT after `break` (ECMA).
+                let run_step = |env: &mut Env,
+                                frame: &mut HookFrame,
+                                host: &mut dyn Host,
+                                effects: &mut Vec<EffectJob>|
+                 -> Result<(), RuntimeError> {
+                    if let Some(s) = step {
+                        eval(s, env, frame, host, components, effects)?;
+                    }
+                    Ok(())
+                };
+                match eval(body, env, frame, host, components, effects) {
+                    Ok(_) => run_step(env, frame, host, effects)?,
+                    Err(e) if e.is_break() => break,
+                    Err(e) if e.is_continue() => {
+                        run_step(env, frame, host, effects)?;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(Value::Null)
+        }
+        JsExpr::Switch {
+            disc,
+            cases,
+            default,
+        } => {
+            // ECMA fall-through: find the first case whose test strictly
+            // equals the discriminant (or the default when none matches),
+            // then run that case and every case after it until `break`.
+            let d = eval(disc, env, frame, host, components, effects)?;
+            let mut start = cases.len();
+            for (i, c) in cases.iter().enumerate() {
+                let t = eval(&c.test, env, frame, host, components, effects)?;
+                if strictly_equal(&d, &t) {
+                    start = i;
+                    break;
+                }
+            }
+            if start == cases.len() {
+                if let Some(def) = default {
+                    let body = JsExpr::Block(def.clone());
+                    match eval(&body, env, frame, host, components, effects) {
+                        Ok(_) => {}
+                        Err(e) if e.is_break() => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                return Ok(Value::Null);
+            }
+            for c in &cases[start..] {
+                let body = JsExpr::Block(c.body.clone());
+                match eval(&body, env, frame, host, components, effects) {
+                    Ok(_) => {}
+                    Err(e) if e.is_break() => break,
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(Value::Null)
+        }
+        JsExpr::Break => Err(RuntimeError::break_()),
+        JsExpr::Continue => Err(RuntimeError::continue_()),
+        JsExpr::Return(v) => {
+            let value = match v {
+                Some(e) => eval(e, env, frame, host, components, effects)?,
+                None => Value::Undefined,
+            };
+            Err(RuntimeError::return_(value))
+        }
+        JsExpr::Update {
+            inc,
+            target,
+            prefix,
+        } => {
+            // `x++` / `++x`: read, ToNumber-coerce, write back, yield old/new.
+            let old = eval(target, env, frame, host, components, effects)?;
+            let n = ecma_to_number(&old);
+            let new = Value::Number(if *inc { n + 1.0 } else { n - 1.0 });
+            match &**target {
+                JsExpr::Var(name) => {
+                    env.assign(name, new.clone());
+                }
+                JsExpr::Get { base, prop } => {
+                    let b = eval(base, env, frame, host, components, effects)?;
+                    write_prop(&b, prop, new.clone(), frame)?;
+                }
+                other => {
+                    return Err(RuntimeError::new(format!(
+                        "update target must be a variable or member, got {other:?}"
+                    )))
+                }
+            }
+            Ok(if *prefix { new } else { old })
+        }
+        JsExpr::SpreadArg(e) => {
+            // Spread outside a call arg list is a precise error (the lowerer
+            // only emits SpreadArg inside Call args).
+            let _ = eval(e, env, frame, host, components, effects)?;
+            Err(RuntimeError::new("spread element outside a call"))
         }
         JsExpr::Block(stmts) => {
             // Evaluate in order; the block's value is the last expression
@@ -336,6 +493,18 @@ pub fn eval(
         } => {
             let try_block = JsExpr::Block(block.clone());
             let mut outcome = eval(&try_block, env, frame, host, components, effects);
+            // Control flow (`break`/`continue`/`return`) is NOT catchable —
+            // it propagates straight through to its driver (ECMA abrupt
+            // completions bypass `catch`; only `finally` still runs).
+            if let Err(e) = &outcome {
+                if e.is_break() || e.is_continue() || e.return_value().is_some() {
+                    if let Some(fb) = finally {
+                        let finally_block = JsExpr::Block(fb.clone());
+                        eval(&finally_block, env, frame, host, components, effects)?;
+                    }
+                    return outcome;
+                }
+            }
             if outcome.is_err() {
                 if let Some(cb) = catch {
                     let caught = outcome.err().unwrap().caught_value();
@@ -573,8 +742,124 @@ pub fn eval(
                 if prop == "map" && args.len() == 1 {
                     return call_map(base, &args[0], env, frame, host, components, effects);
                 }
+                // `arr.concat(x, y, ...)` — ECMA Array.prototype.concat: each
+                // argument appends element-wise when it is an array, as a
+                // single element otherwise. Returns a NEW array.
+                if prop == "concat" {
+                    let b = eval(base, env, frame, host, components, effects)?;
+                    let Value::Array(items) = &b else {
+                        return Err(RuntimeError::new(format!("concat on non-array {b}")));
+                    };
+                    let mut out = items.clone();
+                    for a in args {
+                        let v = eval(a, env, frame, host, components, effects)?;
+                        match v {
+                            Value::Array(vs) => out.extend(vs),
+                            other => out.push(other),
+                        }
+                    }
+                    return Ok(Value::Array(out));
+                }
+                // `Math.random()` — backed by a xorshift64* PRNG (deterministic
+                // seed: rendering stays reproducible across runs; randomness
+                // quality matches the id-generation use case).
+                if let JsExpr::Var(m) = &**base {
+                    if m == "Math" && prop == "random" && args.is_empty() {
+                        static SEED: std::sync::atomic::AtomicU64 =
+                            std::sync::atomic::AtomicU64::new(0x243F_6A88_85A3_08D3);
+                        let mut s = SEED.load(std::sync::atomic::Ordering::Relaxed);
+                        s ^= s >> 12;
+                        s ^= s << 25;
+                        s ^= s >> 27;
+                        SEED.store(s, std::sync::atomic::Ordering::Relaxed);
+                        let r = (s.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64
+                            / (1u64 << 53) as f64;
+                        return Ok(Value::Number(r));
+                    }
+                }
+                // `obj.$rest("a", "b")` / `arr.$restFrom(n)` — destructuring
+                // rest lowering: own-enumerable leftovers minus listed keys
+                // (object), or elements from index n (array).
+                if prop == "$rest" {
+                    let b = eval(base, env, frame, host, components, effects)?;
+                    let mut skip = std::collections::BTreeSet::new();
+                    for a in args {
+                        let k = eval(a, env, frame, host, components, effects)?;
+                        skip.insert(k.as_str_utf8().unwrap_or_else(|| k.display()));
+                    }
+                    match &b {
+                        Value::Object(o) => {
+                            let mut props = BTreeMap::new();
+                            for (k, v) in o.borrow().props.iter() {
+                                if !skip.contains(k) {
+                                    props.insert(k.clone(), v.clone());
+                                }
+                            }
+                            return Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
+                                crate::value::ObjData { props, proto: None },
+                            ))));
+                        }
+                        Value::Map(m) => {
+                            let rest: BTreeMap<String, Value> = m
+                                .iter()
+                                .filter(|(k, _)| !skip.contains(*k))
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
+                            return Ok(Value::Map(rest.into_iter().collect()));
+                        }
+                        other => {
+                            return Err(RuntimeError::new(format!(
+                                "object rest of non-object {other}"
+                            )))
+                        }
+                    }
+                }
+                if prop == "$restFrom" && args.len() == 1 {
+                    let b = eval(base, env, frame, host, components, effects)?;
+                    let n = eval(&args[0], env, frame, host, components, effects)?;
+                    let Value::Array(items) = &b else {
+                        return Err(RuntimeError::new(format!("array rest of non-array {b}")));
+                    };
+                    let Some(i) = n.as_number() else {
+                        return Err(RuntimeError::new("array rest index must be a number"));
+                    };
+                    let from = (i as usize).min(items.len());
+                    return Ok(Value::Array(items[from..].to_vec()));
+                }
                 if prop == "filter" && args.len() == 1 {
                     return call_filter(base, &args[0], env, frame, host, components, effects);
+                }
+                // `arr.every(pred)` — true when the predicate is truthy for
+                // every element (vacuously true for `[]`). Same per-item
+                // protocol as map/filter.
+                if prop == "every" && args.len() == 1 {
+                    let arr = eval(base, env, frame, host, components, effects)?;
+                    let Value::Array(items) = arr else {
+                        return Err(RuntimeError::new("cannot every over non-array"));
+                    };
+                    let (params, body) = match &args[0] {
+                        JsExpr::Closure { params, body, .. } => (params, body),
+                        _ => return Err(RuntimeError::new("every expects an arrow function")),
+                    };
+                    let mut ok = true;
+                    for (i, elem) in items.into_iter().enumerate() {
+                        env.push_scope();
+                        if let Some(p) = params.first() {
+                            env.define(p, elem);
+                        }
+                        if let Some(p) = params.get(1) {
+                            env.define(p, Value::Number(i as f64));
+                        }
+                        // A `return` inside the predicate completes THAT
+                        // invocation.
+                        let r = eval_function_body(body, env, frame, host, components, effects);
+                        env.pop_scope();
+                        if !r?.is_truthy() {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    return Ok(Value::Bool(ok));
                 }
                 if prop == "log" {
                     let parts: Result<Vec<String>, RuntimeError> = args
@@ -682,6 +967,39 @@ fn lit_to_value(l: &r2n_ir::value::Literal) -> Value {
         L::Bool(b) => Value::Bool(*b),
         L::Null => Value::Null,
         L::Undefined => Value::Undefined,
+    }
+}
+
+/// Shared member-write path for `Assign` and `Update` (`x.y = v`, `x.y++`):
+/// `ref.current` writes the frame slot; `__proto__` sets the chain link;
+/// object members set own props; anything else is a precise error.
+fn write_prop(
+    base: &Value,
+    prop: &str,
+    v: Value,
+    frame: &mut HookFrame,
+) -> Result<(), RuntimeError> {
+    match (base, prop) {
+        (Value::Ref { slot }, "current") => {
+            frame.write_ref(*slot, v);
+            Ok(())
+        }
+        (Value::Object(o), "__proto__") => {
+            let mut b = o.borrow_mut();
+            b.proto = match &v {
+                Value::Object(p) => Some(p.clone()),
+                Value::Null => None,
+                _ => return Err(RuntimeError::new("__proto__ must be an object or null")),
+            };
+            Ok(())
+        }
+        (Value::Object(o), p) => {
+            o.borrow_mut().set_own(p.to_string(), v);
+            Ok(())
+        }
+        _ => Err(RuntimeError::new(format!(
+            "cannot assign to {prop} on {base}"
+        ))),
     }
 }
 
@@ -813,8 +1131,41 @@ fn eval_bin(
         Le => return Ok(Value::Bool(ord(&l, &r)? != std::cmp::Ordering::Greater)),
         Ge => return Ok(Value::Bool(ord(&l, &r)? != std::cmp::Ordering::Less)),
         And | Or => unreachable!(),
+        // `a ?? b`: `a` unless it is null/undefined. Short-circuit: `b`
+        // was already evaluated above (strict arg evaluation) — the value
+        // choice is what matters; laziness arrives with full lazy-arg
+        // evaluation (documented limitation).
+        Nullish => {
+            return Ok(match &l {
+                Value::Null | Value::Undefined => r,
+                _ => l,
+            })
+        }
+        // `a | b`: bitwise OR on ToInt32 operands (ECMA 13.11). Used by
+        // real-world code (`(x * 64) | 0` as Math.floor).
+        BitOr => {
+            let li = ecma_to_int32(&l);
+            let ri = ecma_to_int32(&r);
+            Value::Number(f64::from(li | ri))
+        }
     };
     Ok(res)
+}
+
+/// ECMA-262 ToInt32 (7.1.6): ToNumber, then modulo 2^32 into signed range.
+/// NaN/±Infinity/±0 map to +0.
+fn ecma_to_int32(v: &Value) -> i32 {
+    let n = ecma_to_number(v);
+    if !n.is_finite() || n == 0.0 {
+        return 0;
+    }
+    // Truncate toward zero, then take modulo 2^32 as UNSIGNED and reinterpret
+    // the bits as signed — exactly ECMA's "modulo 2^32, then if >= 2^31
+    // subtract 2^32".
+    let truncated = n.trunc();
+    // f64 -> u64 via Euclidean remainder on the (huge but finite) value.
+    let moduled = truncated.rem_euclid(4294967296.0) as u64;
+    moduled as i32
 }
 
 /// Compute an arithmetic result, requiring both operands to be numbers.
@@ -1057,16 +1408,17 @@ fn call_value(
             if let Some(p) = params.get(1) {
                 denv.define(p, action);
             }
-            let new_state = eval(&body, &mut denv, frame, host, components, effects)?;
+            let new_state = eval_function_body(&body, &mut denv, frame, host, components, effects)?;
             frame.write_state(*slot, new_state);
             Ok(Value::Null)
         }
         Value::Handler { body, .. } => {
             // Handler values are plain closures; invoking one evaluates its
             // body in the CURRENT env/frame (the caller's render scope —
-            // e.g. `this.method()` inside a class render/handler).
+            // e.g. `this.method()` inside a class render/handler). A
+            // `return` inside completes the handler (closure semantics).
             // Event dispatch still exists for the ABI's on* path.
-            eval(body, env, frame, host, components, effects)
+            eval_function_body(body, env, frame, host, components, effects)
         }
         Value::AsyncFn(af) => {
             // An async call returns a promise; segment 0 runs synchronously
@@ -1137,7 +1489,10 @@ fn call_value(
             for (i, p) in params.iter().enumerate() {
                 fenv.define(p, args.get(i).cloned().unwrap_or(Value::Undefined));
             }
-            eval(body, &mut fenv, frame, host, components, effects)
+            // `return v` inside the body raises through the error channel;
+            // catch it here — the carried value is the call's result. A body
+            // with no `return` yields the block's value (or null).
+            eval_function_body(body, &mut fenv, frame, host, components, effects)
         }
         other => Err(RuntimeError::new(format!(
             "cannot call {other} as function"
@@ -1205,12 +1560,22 @@ fn call_var(
             Ok(Value::Null)
         }
         "useReducer" => {
-            // The reducer is the FIRST arg's closure (params + body); it is
-            // stored as IR data (never a function pointer) and evaluated at
-            // dispatch time: `reducer(state, action)`.
+            // The reducer is the FIRST arg (params + body); it is stored as
+            // IR data (never a function pointer) and evaluated at dispatch
+            // time: `reducer(state, action)`. Accepts an inline arrow OR a
+            // reference to a module-level reducer (e.g. an imported
+            // `todoReducer`, which evaluates to a `Value::Function`).
             let (rparams, rbody) = match args.first() {
                 Some(JsExpr::Closure { params, body, .. }) => (params.clone(), (**body).clone()),
-                _ => return Err(RuntimeError::new("useReducer expects a reducer arrow")),
+                Some(e) => match eval(e, env, frame, host, components, effects)? {
+                    Value::Function { params, body, .. } => (params, (*body).clone()),
+                    other => {
+                        return Err(RuntimeError::new(format!(
+                            "useReducer expects a reducer function, got {other}"
+                        )))
+                    }
+                },
+                None => return Err(RuntimeError::new("useReducer expects a reducer arrow")),
             };
             let initial = if let Some(a) = args.get(1) {
                 eval(a, env, frame, host, components, effects)?
@@ -1367,10 +1732,12 @@ fn call_var(
                 Some(cached) => Ok(cached),
                 None => {
                     // Compute lazily: run the factory (an arrow's body) in
-                    // the CURRENT render env (it closes over the scope).
+                    // the CURRENT render env (it closes over the scope). A
+                    // `return` inside completes the factory (closure
+                    // semantics — e.g. early exits in a memo computation).
                     let value = match &args[0] {
                         JsExpr::Closure { body, .. } => {
-                            eval(body, env, frame, host, components, effects)?
+                            eval_function_body(body, env, frame, host, components, effects)?
                         }
                         _ => return Err(RuntimeError::new("useMemo expects a factory arrow")),
                     };
@@ -1404,6 +1771,52 @@ fn call_var(
                 ident,
             };
             Ok(frame.use_callback(deps, value))
+        }
+        "memo" => {
+            // `memo(fn)` — React's memo HOF. Semantics here are identity:
+            // the wrapped function is returned unchanged (no re-render
+            // bailout optimization yet — correctness first). Accepts a
+            // closure OR an already-evaluated function value.
+            match args.first() {
+                Some(JsExpr::Closure { params, body, .. }) => Ok(Value::Function {
+                    params: params.clone(),
+                    body: body.clone(),
+                    captured: env.clone(),
+                    ident: std::rc::Rc::new(()),
+                }),
+                Some(e) => {
+                    let v = eval(e, env, frame, host, components, effects)?;
+                    match &v {
+                        Value::Function { .. } => Ok(v),
+                        other => Err(RuntimeError::new(format!(
+                            "memo expects a function, got {other}"
+                        ))),
+                    }
+                }
+                None => Err(RuntimeError::new("memo expects a function")),
+            }
+        }
+        "classnames" => {
+            // The `classnames` package (subset): strings pass through,
+            // `{key: truthy}` objects contribute keys with truthy values,
+            // arrays flatten recursively; falsy values contribute nothing.
+            // Called as `classnames(...)` (external import — no module).
+            let mut classes = Vec::new();
+            for a in args {
+                let v = eval(a, env, frame, host, components, effects)?;
+                collect_classnames(&v, &mut classes);
+            }
+            Ok(Value::from_str_utf8(&classes.join(" ")))
+        }
+        "useLocation" => {
+            // `react-router-dom` stub: the static renderer has no router, so
+            // the location is always `/` (the "All" view). Real routing
+            // arrives with the browser host.
+            let mut data = crate::value::ObjData::new();
+            data.set_own("pathname".to_string(), Value::from_str_utf8("/"));
+            Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
+                data,
+            ))))
         }
         "console" => Ok(Value::Null),
         "log" => {
@@ -1464,11 +1877,49 @@ fn call_map(
         if let Some(p) = params.get(1) {
             env.define(p, Value::Number(i as f64));
         }
-        let r = eval(body, env, frame, host, components, effects);
+        // A `return` inside the callback completes THAT invocation (JS
+        // callback semantics — e.g. early exits in a map/filter body).
+        let r = eval_function_body(body, env, frame, host, components, effects);
         env.pop_scope();
         out.push(r?);
     }
     Ok(Value::Array(out))
+}
+
+/// Collect `classnames` contributions: strings verbatim, objects by truthy
+/// keys, arrays flattened; numbers contribute when nonzero (matching the
+/// package for the supported value set).
+fn collect_classnames(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::Str(s) => {
+            let text = String::from_utf16_lossy(s);
+            if !text.is_empty() {
+                out.push(text);
+            }
+        }
+        Value::Number(n) if *n != 0.0 => out.push(v.display()),
+        Value::Bool(true) => {}
+        Value::Array(items) => {
+            for it in items {
+                collect_classnames(it, out);
+            }
+        }
+        Value::Object(o) => {
+            for (k, val) in o.borrow().props.iter() {
+                if val.is_truthy() {
+                    out.push(k.clone());
+                }
+            }
+        }
+        Value::Map(m) => {
+            for (k, val) in m.iter() {
+                if val.is_truthy() {
+                    out.push(k.clone());
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// `arr.filter(predicate)` — keeps elements whose predicate result is truthy.
@@ -1502,7 +1953,8 @@ fn call_filter(
             if let Some(p) = params.get(1) {
                 env.define(p, Value::Number(i as f64));
             }
-            let r = eval(body, env, frame, host, components, effects);
+            // A `return` inside the predicate completes THAT invocation.
+            let r = eval_function_body(body, env, frame, host, components, effects);
             env.pop_scope();
             r?.is_truthy()
         };
@@ -1596,7 +2048,15 @@ fn run_generator_step(
             break;
         }
     }
-    let v = outcome?;
+    // `return v` inside the segment COMPLETES the generator with v
+    // (`{value: v, done: true}` at the caller).
+    let v = match outcome {
+        Err(e) => match e.return_value() {
+            Some(v) => return Ok((v, None, true)),
+            None => return Err(e),
+        },
+        Ok(v) => v,
+    };
     match &step.await_expr {
         Some(yexpr) => {
             let yv = eval(yexpr, env, frame, host, components, effects)?;
@@ -1720,9 +2180,15 @@ pub fn run_async_step(
     }
     match outcome {
         Err(e) => {
-            // Segment failed: reject the promise with the error value.
-            let v = e.caught_value();
-            settle_promise(&result, v, false, effects);
+            // `return v` inside the segment COMPLETES the async fn with v
+            // (ECMA: return in an async function resolves its promise);
+            // any other failure rejects it with the error value.
+            if let Some(v) = e.return_value() {
+                settle_promise(&result, v, true, effects);
+            } else {
+                let v = e.caught_value();
+                settle_promise(&result, v, false, effects);
+            }
         }
         Ok(v) => {
             match &step.await_expr {
@@ -2002,6 +2468,8 @@ pub fn run_effect_body(
     components: &[RuntimeComponent],
 ) -> Result<Vec<EffectJob>, RuntimeError> {
     let mut effects = Vec::new();
-    eval(body, env, frame, host, components, &mut effects)?;
+    // A `return` inside completes the setup early (its value is discarded;
+    // cleanup arrows are discovered statically by `cleanup_of`).
+    eval_function_body(body, env, frame, host, components, &mut effects)?;
     Ok(effects)
 }

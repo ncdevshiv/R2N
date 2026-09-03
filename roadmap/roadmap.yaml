@@ -365,6 +365,10 @@ phases:
       - id: "M2-T10"
         title: "Destructuring, spread, rest"
         priority: "P1"
+        done: true
+      - id: "M2-T10b"
+        title: "Rest parameters (...args in params)"
+        priority: "P1"
         done: false
       - id: "M2-T11"
         title: "Symbols, Proxy, Reflect"

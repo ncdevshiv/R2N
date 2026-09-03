@@ -82,6 +82,16 @@ pub struct ModuleIr {
     pub exports: Vec<(String, usize)>,
 }
 
+/// A top-level plain `function name(params) { stmts }` (M2-T10): lowered to a
+/// closure body + plain param names; the runtime binds it as a first-class
+/// `Value::Function` in the global env (module-scope function values).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FuncIr {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: crate::js::JsExpr,
+}
+
 impl ModuleIr {
     /// The runtime namespace name for this module (the key bound in global_env).
     pub fn namespace(&self) -> String {
@@ -107,6 +117,14 @@ pub struct RuntimeTemplate {
     /// state machines; the runtime binds them as values in the global env.
     #[serde(default)]
     pub generators: Vec<GeneratorIr>,
+    /// Top-level plain `function` declarations (M2-T10): lowered bodies; the
+    /// runtime binds them as first-class functions in the global env.
+    #[serde(default)]
+    pub functions: Vec<FuncIr>,
+    /// Top-level `let`/`const` bindings (T09b): `(name, value)` pairs evaluated
+    /// in source order at module-init time into the global env.
+    #[serde(default)]
+    pub top_levels: Vec<(String, crate::js::JsExpr)>,
     /// Linked module metadata (M2-T09). Empty for a single-file program.
     #[serde(default)]
     pub modules: Vec<ModuleIr>,

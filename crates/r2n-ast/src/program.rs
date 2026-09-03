@@ -22,13 +22,54 @@ pub enum Decl {
     /// `function* name(params) { ... }` — a generator function (M2-T08).
     /// The body is a statement list; `yield` splits it into segments.
     GeneratorFn(GeneratorFn),
+    /// `function name(params) { ... }` — a plain (non-generator) function
+    /// declaration. Evaluates to a first-class `Value::Function` bound under
+    /// `name` in the enclosing scope.
+    FuncDecl(FuncDecl),
+    /// `export function name(params) { ... }` / `export const name = ...;` —
+    /// an inline-exported declaration: declares the binding AND registers it
+    /// as a named export.
+    ExportDecl(ExportDecl),
+    /// Top-level `let`/`const` (module-scope bindings, T09b): evaluated once
+    /// in source order when the module initializes; visible to every
+    /// component and function in the module via the global env.
+    TopLevel {
+        kind: DeclKind,
+        pattern: Pattern,
+        value: Expr,
+    },
+}
+
+/// A plain function declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FuncDecl {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub body: Vec<Stmt>,
+}
+
+/// One function parameter: a binding pattern with an optional default.
+/// `(x)`, `(x = 1)`, `({a, b})`, `([x, y] = pair)`, `(...rest)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Param {
+    pub pattern: Pattern,
+    pub default: Option<Expr>,
+    pub rest: bool,
+}
+
+/// An inline-exported declaration: `export function f() {}` or
+/// `export const x = expr;`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExportDecl {
+    Function(FuncDecl),
+    Const { name: String, value: Expr },
 }
 
 /// A top-level generator function declaration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeneratorFn {
     pub name: String,
-    pub params: Vec<String>,
+    pub params: Vec<Param>,
     pub body: Vec<Stmt>,
 }
 
@@ -47,7 +88,7 @@ pub struct Component {
     /// Parameter names (the component receives a single `props` object in
     /// React, but R2N components take explicit named params for clarity and
     /// to avoid `props.x` plumbing in the supported subset).
-    pub params: Vec<String>,
+    pub params: Vec<Param>,
     /// The render body: a list of statements, the last being `return <.../>`.
     pub body: Vec<Stmt>,
 }
@@ -71,7 +112,7 @@ pub struct ClassComponent {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Method {
     pub name: String,
-    pub params: Vec<String>,
+    pub params: Vec<Param>,
     /// Body statements; `render`'s body ends with `return <.../>`.
     pub body: Vec<Stmt>,
 }
@@ -115,12 +156,133 @@ pub enum Stmt {
     /// `const name = expr;` — read-only binding (treated same as `let` at IR
     /// level; immutability is not enforced beyond this declaration).
     Const { name: String, value: Expr },
+    /// `let {a, b: c} = expr;` / `const [x, ...rest] = expr;` — destructuring
+    /// binding. Each `(pattern, default)` pair binds one name; `default` is
+    /// used when the destructured value is `undefined`.
+    Destructure {
+        kind: DeclKind,
+        pattern: Pattern,
+        value: Expr,
+    },
     /// `return expr;` — must produce an `Expr::Element` (or a conditional that
     /// resolves to one) in a component body.
     Return(Expr),
     /// A bare expression evaluated for its side effects (e.g. `useEffect(...)`),
     /// with an optional trailing `;`.
     Expr(Expr),
+    /// `if (cond) { ... } else { ... }` — statement form. The `else` branch is
+    /// optional; a lone `if` without `else` evaluates to null when false.
+    If {
+        cond: Expr,
+        then: Vec<Stmt>,
+        else_: Option<Vec<Stmt>>,
+    },
+    /// `while (cond) { ... }` — loop until `cond` is falsy.
+    While { cond: Expr, body: Vec<Stmt> },
+    /// `for (init; cond; update) { ... }` — C-style loop. `init` is an optional
+    /// `let`/`const` declaration or expression; `cond` defaults to `true` when
+    /// absent; `update` is an optional expression.
+    For {
+        init: Option<Box<Stmt>>,
+        cond: Option<Expr>,
+        update: Option<Expr>,
+        body: Vec<Stmt>,
+    },
+    /// `switch (disc) { case a: ...; default: ... }` — first matching case runs,
+    /// then FALL THROUGH continues into subsequent cases until `break`.
+    Switch {
+        disc: Expr,
+        cases: Vec<(Option<Expr>, Vec<Stmt>)>,
+    },
+    /// `break;` — exit the innermost loop or switch.
+    Break,
+    /// `continue;` — skip to the next loop iteration.
+    Continue,
+}
+
+/// `let` vs `const` for destructuring bindings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclKind {
+    Let,
+    Const,
+}
+
+/// A binding pattern for destructuring declarations and parameters:
+/// `x`, `{a, b: c = d, ...rest}`, `[x, , y = d, ...rest]`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pattern {
+    /// A single name, with an optional default (`x = 3`).
+    Name { name: String, default: Option<Expr> },
+    /// `{a, b: c = d, ...rest}` — property bindings plus optional rest name.
+    Object {
+        props: Vec<ObjectProp>,
+        rest: Option<String>,
+    },
+    /// `[a, , b = d, ...rest]` — positional bindings (holes skipped) plus
+    /// optional rest name.
+    Array {
+        items: Vec<Option<Pattern>>,
+        rest: Option<String>,
+    },
+}
+
+/// One property binding inside an object pattern: `key`, `key: pat`, or
+/// `key = default` (shorthand with default). `alias` is `None` for shorthand.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectProp {
+    pub key: String,
+    pub alias: Option<Pattern>,
+}
+
+impl std::fmt::Display for Pattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Pattern::Name { name, default } => {
+                write!(f, "{name}")?;
+                if let Some(d) = default {
+                    write!(f, " = {d}")?;
+                }
+                Ok(())
+            }
+            Pattern::Object { props, rest } => {
+                write!(f, "{{")?;
+                for (i, p) in props.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", p.key)?;
+                    if let Some(a) = &p.alias {
+                        write!(f, ": {a}")?;
+                    }
+                }
+                if let Some(r) = rest {
+                    if !props.is_empty() {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "...{r}")?;
+                }
+                write!(f, "}}")
+            }
+            Pattern::Array { items, rest } => {
+                write!(f, "[")?;
+                for (i, it) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    if let Some(p) = it {
+                        write!(f, "{p}")?;
+                    }
+                }
+                if let Some(r) = rest {
+                    if !items.is_empty() {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "...{r}")?;
+                }
+                write!(f, "]")
+            }
+        }
+    }
 }
 
 /// A complete R2N program: a set of declarations plus the root component name.

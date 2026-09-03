@@ -15,7 +15,7 @@ use crate::react::{ComponentRef, ReactNode};
 use crate::runtime::{ClassInfo, ClassMethod, RuntimeComponent, RuntimeTemplate};
 use r2n_ast::expr::{Element, Expr, Prop};
 use r2n_ast::op::{BinOp, UnOp};
-use r2n_ast::program::{ClassComponent, Component, Decl, Program, Stmt};
+use r2n_ast::program::{ClassComponent, Component, Decl, Param, Pattern, Program, Stmt};
 use std::collections::HashMap;
 
 /// Error during lowering (e.g. unknown component reference).
@@ -35,6 +35,10 @@ pub enum LowerError {
     /// fragments accept only `key`; other attributes would be silently
     /// meaningless).
     InvalidFragmentProp(String),
+    /// A statement or expression form the lowerer does not support yet
+    /// (general statement grammar, T09b/T10): precise compile error naming
+    /// the construct and its source position context.
+    Unsupported(String),
 }
 
 impl std::fmt::Display for LowerError {
@@ -47,6 +51,7 @@ impl std::fmt::Display for LowerError {
                 write!(f, "fragment `<>` accepts only `key`, got `{n}`")
             }
             LowerError::UnsupportedAwait(s) => write!(f, "unsupported await: {s}"),
+            LowerError::Unsupported(s) => write!(f, "unsupported construct: {s}"),
         }
     }
 }
@@ -79,6 +84,8 @@ pub fn lower_dev(program: &Program) -> Result<RuntimeTemplate, LowerError> {
 pub type LoweredModuleParts = (
     Vec<(usize, RuntimeComponent)>,
     Vec<crate::runtime::GeneratorIr>,
+    Vec<crate::runtime::FuncIr>,
+    Vec<(String, JsExpr)>,
     Option<String>,
 );
 
@@ -88,6 +95,8 @@ pub fn lower_module_parts(
 ) -> Result<LoweredModuleParts, LowerError> {
     let mut parts = Vec::new();
     let mut generators = Vec::new();
+    let mut functions = Vec::new();
+    let mut top_levels = Vec::new();
     let mut default = None;
     for decl in &program.decls {
         match decl {
@@ -106,11 +115,344 @@ pub fn lower_module_parts(
                 parts.push((idx, lower_class(c, names)?));
             }
             Decl::GeneratorFn(g) => generators.push(lower_generator_fn(g, names)?),
+            Decl::FuncDecl(f) => functions.push(lower_func_decl(f, names)?),
+            Decl::TopLevel { pattern, value, .. } => {
+                top_levels.extend(lower_top_level(pattern, value, names)?);
+            }
             Decl::ExportDefault(name) => default = Some(name.clone()),
+            Decl::ExportDecl(e) => match e {
+                r2n_ast::program::ExportDecl::Function(f) => {
+                    // Exported functions are COMPONENTS (React semantics —
+                    // the linker pre-assigned a table index): lower the
+                    // params+body as a component. A non-JSX return is a
+                    // precise NonRenderableReturn, not a silent miscompile.
+                    let idx = names
+                        .get(&f.name)
+                        .copied()
+                        .ok_or_else(|| LowerError::UnknownComponent(f.name.clone()))?;
+                    parts.push((
+                        idx,
+                        lower_component(
+                            &Component {
+                                name: f.name.clone(),
+                                params: f.params.clone(),
+                                body: f.body.clone(),
+                            },
+                            names,
+                        )?,
+                    ));
+                }
+                r2n_ast::program::ExportDecl::Const { name, value } => {
+                    // `export const Name = memo(function...)` — a component
+                    // through the memo HOF (index pre-assigned); any other
+                    // const is a module value.
+                    match component_fn_of(value) {
+                        Some((params, body)) => {
+                            let idx = names
+                                .get(name)
+                                .copied()
+                                .ok_or_else(|| LowerError::UnknownComponent(name.clone()))?;
+                            parts.push((
+                                idx,
+                                lower_component(
+                                    &Component {
+                                        name: name.clone(),
+                                        params: params.clone(),
+                                        body: body.clone(),
+                                    },
+                                    names,
+                                )?,
+                            ));
+                        }
+                        None => top_levels.push((name.clone(), lower_expr(value, names)?)),
+                    }
+                }
+            },
             Decl::Import(_) | Decl::ExportNamed(_) => {}
         }
     }
-    Ok((parts, generators, default))
+    Ok((parts, generators, functions, top_levels, default))
+}
+
+/// Lower a plain `function name(params) { stmts }` to a `FuncIr`: the body
+/// becomes a Block of Assigns (locals) ending in the terminal value, exactly
+/// like an ES class method body — `return e` raises through the runtime's
+/// control-flow channel and is caught at the call boundary.
+fn lower_func_decl(
+    f: &r2n_ast::program::FuncDecl,
+    index: &HashMap<String, usize>,
+) -> Result<crate::runtime::FuncIr, LowerError> {
+    let (params, mut stmts) = lower_param_binds(&f.params, index, &format!("function {}", f.name))?;
+    for st in &f.body {
+        lower_stmt(st, &f.name, index, &mut stmts)?;
+    }
+    Ok(crate::runtime::FuncIr {
+        name: f.name.clone(),
+        params,
+        body: JsExpr::Block(stmts),
+    })
+}
+
+/// Lower one statement of a plain-function body into `out` (general statement
+/// grammar: `if`/`while`/`for`/`switch`/`break`/`continue`/destructuring all
+/// lower to their IR drivers; control flow travels the runtime's error
+/// channel and is caught by the loop/switch drivers and the call boundary).
+fn lower_stmt(
+    st: &Stmt,
+    fn_name: &str,
+    index: &HashMap<String, usize>,
+    out: &mut Vec<JsExpr>,
+) -> Result<(), LowerError> {
+    match st {
+        Stmt::Let { name, value } | Stmt::Const { name, value } => {
+            out.push(JsExpr::Assign {
+                target: Box::new(JsExpr::Var(name.clone())),
+                value: Box::new(lower_expr(value, index)?),
+            });
+        }
+        Stmt::Destructure { pattern, value, .. } => {
+            lower_destructure(pattern, &lower_expr(value, index)?, index, out)?;
+        }
+        Stmt::Return(expr) => {
+            // `return e` raises; the call boundary catches it. (A bare value
+            // without Return would fall through to the next statement —
+            // wrong for early returns like the reducer's `case: return ...`.)
+            out.push(JsExpr::Return(Some(Box::new(lower_expr(expr, index)?))));
+        }
+        Stmt::Expr(e) => out.push(lower_expr(e, index)?),
+        Stmt::If { cond, then, else_ } => {
+            let mut then_out = Vec::new();
+            for s in then {
+                lower_stmt(s, fn_name, index, &mut then_out)?;
+            }
+            let mut else_out = Vec::new();
+            if let Some(ss) = else_ {
+                for s in ss {
+                    lower_stmt(s, fn_name, index, &mut else_out)?;
+                }
+            } else {
+                else_out.push(JsExpr::Lit(r2n_ast::lit::Literal::Null));
+            }
+            out.push(JsExpr::If {
+                cond: Box::new(lower_expr(cond, index)?),
+                then: Box::new(JsExpr::Block(then_out)),
+                else_: Box::new(JsExpr::Block(else_out)),
+            });
+        }
+        Stmt::While { cond, body } => {
+            let mut body_out = Vec::new();
+            for s in body {
+                lower_stmt(s, fn_name, index, &mut body_out)?;
+            }
+            out.push(JsExpr::While {
+                cond: Box::new(lower_expr(cond, index)?),
+                body: Box::new(JsExpr::Block(body_out)),
+                step: None,
+            });
+        }
+        Stmt::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            // `for (init; cond; update) body` -> `init; while (cond ??
+            // true) { body } step update`: the step runs after every
+            // iteration INCLUDING `continue`, but not after `break` (ECMA).
+            if let Some(i) = init {
+                lower_stmt(i, fn_name, index, out)?;
+            }
+            let mut body_out = Vec::new();
+            for s in body {
+                lower_stmt(s, fn_name, index, &mut body_out)?;
+            }
+            let cond_e = match cond {
+                Some(c) => lower_expr(c, index)?,
+                None => JsExpr::Lit(r2n_ast::lit::Literal::Bool(true)),
+            };
+            let step = match update {
+                Some(u) => Some(Box::new(lower_expr(u, index)?)),
+                None => None,
+            };
+            out.push(JsExpr::While {
+                cond: Box::new(cond_e),
+                body: Box::new(JsExpr::Block(body_out)),
+                step,
+            });
+        }
+        Stmt::Switch { disc, cases } => {
+            let mut lowered = Vec::new();
+            let mut default = None;
+            for (test, body) in cases {
+                let mut body_out = Vec::new();
+                for s in body {
+                    lower_stmt(s, fn_name, index, &mut body_out)?;
+                }
+                match test {
+                    Some(t) => lowered.push(crate::js::SwitchCase {
+                        test: lower_expr(t, index)?,
+                        body: body_out,
+                    }),
+                    None => default = Some(body_out),
+                }
+            }
+            out.push(JsExpr::Switch {
+                disc: Box::new(lower_expr(disc, index)?),
+                cases: lowered,
+                default,
+            });
+        }
+        Stmt::Break => out.push(JsExpr::Break),
+        Stmt::Continue => out.push(JsExpr::Continue),
+    }
+    let _ = fn_name;
+    Ok(())
+}
+
+/// Lower a destructuring binding `pattern = value` into plain `Assign`s in
+/// `out`: the value evaluates ONCE into a `$dst` temp, then each bound name
+/// assigns from an index/get of the temp (`o[N]` for arrays, `.key` for
+/// objects). Object/array `...rest` rebuilds the leftover as a fresh
+/// array/object. `$dst`/`$dstN` are reserved (never user bindings).
+fn lower_destructure(
+    pattern: &Pattern,
+    value: &JsExpr,
+    index: &HashMap<String, usize>,
+    out: &mut Vec<JsExpr>,
+) -> Result<(), LowerError> {
+    static DST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = DST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = format!("$dst{n}");
+    out.push(JsExpr::Assign {
+        target: Box::new(JsExpr::Var(tmp.clone())),
+        value: Box::new(value.clone()),
+    });
+    lower_pattern_into(pattern, &JsExpr::Var(tmp), index, out)
+}
+
+/// Bind every name in `pattern` from the already-evaluated `src` expression.
+fn lower_pattern_into(
+    pattern: &Pattern,
+    src: &JsExpr,
+    index: &HashMap<String, usize>,
+    out: &mut Vec<JsExpr>,
+) -> Result<(), LowerError> {
+    match pattern {
+        Pattern::Name { name, default } => {
+            let mut rhs = src.clone();
+            if let Some(d) = default {
+                // `x = dflt`: default applies when the value is `undefined`.
+                rhs = JsExpr::If {
+                    cond: Box::new(JsExpr::Bin {
+                        op: JsBinOp::StrictEq,
+                        left: Box::new(src.clone()),
+                        right: Box::new(JsExpr::Lit(r2n_ast::lit::Literal::Undefined)),
+                    }),
+                    then: Box::new(lower_expr(d, index)?),
+                    else_: Box::new(src.clone()),
+                };
+            }
+            out.push(JsExpr::Assign {
+                target: Box::new(JsExpr::Var(name.clone())),
+                value: Box::new(rhs),
+            });
+        }
+        Pattern::Object { props, rest } => {
+            for pr in props {
+                let field = JsExpr::Get {
+                    base: Box::new(src.clone()),
+                    prop: pr.key.clone(),
+                };
+                match &pr.alias {
+                    Some(alias) => lower_pattern_into(alias, &field, index, out)?,
+                    None => {
+                        out.push(JsExpr::Assign {
+                            target: Box::new(JsExpr::Var(pr.key.clone())),
+                            value: Box::new(field),
+                        });
+                    }
+                }
+            }
+            if let Some(r) = rest {
+                // `...rest`: rebuild without the listed keys. The runtime
+                // exposes this as a builtin member call on the source.
+                out.push(JsExpr::Assign {
+                    target: Box::new(JsExpr::Var(r.clone())),
+                    value: Box::new(JsExpr::Call {
+                        callee: Box::new(JsExpr::Get {
+                            base: Box::new(src.clone()),
+                            prop: "$rest".to_string(),
+                        }),
+                        args: props
+                            .iter()
+                            .map(|p| JsExpr::Lit(r2n_ast::lit::Literal::String(p.key.clone())))
+                            .collect(),
+                    }),
+                });
+            }
+        }
+        Pattern::Array { items, rest } => {
+            for (i, it) in items.iter().enumerate() {
+                if let Some(p) = it {
+                    let elem = JsExpr::Index {
+                        base: Box::new(src.clone()),
+                        key: Box::new(JsExpr::Lit(r2n_ast::lit::Literal::Int(i as i64))),
+                    };
+                    lower_pattern_into(p, &elem, index, out)?;
+                }
+            }
+            if let Some(r) = rest {
+                out.push(JsExpr::Assign {
+                    target: Box::new(JsExpr::Var(r.clone())),
+                    value: Box::new(JsExpr::Call {
+                        callee: Box::new(JsExpr::Get {
+                            base: Box::new(src.clone()),
+                            prop: "$restFrom".to_string(),
+                        }),
+                        args: vec![JsExpr::Lit(r2n_ast::lit::Literal::Int(items.len() as i64))],
+                    }),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+/// Lower a top-level `let pattern = value`: plain names lower directly;
+/// destructuring patterns expand to a `$tlN` temp plus one entry per bound
+/// name (module init evaluates entries in order into the global env, so the
+/// temp protocol works unchanged).
+fn lower_top_level(
+    pattern: &Pattern,
+    value: &r2n_ast::expr::Expr,
+    index: &HashMap<String, usize>,
+) -> Result<Vec<(String, JsExpr)>, LowerError> {
+    let v = lower_expr(value, index)?;
+    match pattern {
+        Pattern::Name { name, .. } => Ok(vec![(name.clone(), v)]),
+        pattern => {
+            let mut tmp = Vec::new();
+            lower_destructure(pattern, &v, index, &mut tmp)?;
+            let mut out = Vec::new();
+            for e in tmp {
+                match e {
+                    JsExpr::Assign { target, value } => match *target {
+                        JsExpr::Var(n) => out.push((n, *value)),
+                        other => {
+                            return Err(LowerError::Unsupported(format!(
+                                "non-variable destructuring target in top-level let: {other:?}"
+                            )));
+                        }
+                    },
+                    other => {
+                        return Err(LowerError::Unsupported(format!(
+                            "non-assign in top-level destructuring expansion: {other:?}"
+                        )));
+                    }
+                }
+            }
+            Ok(out)
+        }
+    }
 }
 
 fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, LowerError> {
@@ -118,14 +460,28 @@ fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, L
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut components: Vec<RuntimeComponent> = Vec::new();
     let mut generators: Vec<crate::runtime::GeneratorIr> = Vec::new();
+    let mut functions: Vec<crate::runtime::FuncIr> = Vec::new();
+    let mut top_levels: Vec<(String, JsExpr)> = Vec::new();
     for decl in &program.decls {
+        // Exported functions and memo-wrapped consts are components (same
+        // rule as the multi-module linker); everything else takes a slot by
+        // its declared name.
         let name = match decl {
             Decl::Component(c) => c.name.clone(),
             Decl::Class(c) => c.name.clone(),
+            Decl::ExportDecl(r2n_ast::program::ExportDecl::Function(f)) => f.name.clone(),
+            Decl::ExportDecl(r2n_ast::program::ExportDecl::Const { name, value })
+                if component_fn_of(value).is_some() =>
+            {
+                name.clone()
+            }
             Decl::Import(_)
             | Decl::ExportDefault(_)
             | Decl::ExportNamed(_)
-            | Decl::GeneratorFn(_) => continue,
+            | Decl::GeneratorFn(_)
+            | Decl::FuncDecl(_)
+            | Decl::ExportDecl(_)
+            | Decl::TopLevel { .. } => continue,
         };
         index.insert(name.clone(), components.len());
         components.push(RuntimeComponent {
@@ -158,6 +514,41 @@ fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, L
             Decl::GeneratorFn(g) => {
                 generators.push(lower_generator_fn(g, &index)?);
             }
+            Decl::FuncDecl(f) => {
+                functions.push(lower_func_decl(f, &index)?);
+            }
+            Decl::TopLevel { pattern, value, .. } => {
+                top_levels.extend(lower_top_level(pattern, value, &index)?);
+            }
+            Decl::ExportDecl(e) => match e {
+                r2n_ast::program::ExportDecl::Function(f) => {
+                    let idx = index[&f.name];
+                    components[idx] = lower_component(
+                        &Component {
+                            name: f.name.clone(),
+                            params: f.params.clone(),
+                            body: f.body.clone(),
+                        },
+                        &index,
+                    )?;
+                }
+                r2n_ast::program::ExportDecl::Const { name, value } => {
+                    match component_fn_of(value) {
+                        Some((params, body)) => {
+                            let idx = index[name];
+                            components[idx] = lower_component(
+                                &Component {
+                                    name: name.clone(),
+                                    params: params.clone(),
+                                    body: body.clone(),
+                                },
+                                &index,
+                            )?;
+                        }
+                        None => top_levels.push((name.clone(), lower_expr(value, &index)?)),
+                    }
+                }
+            },
             _ => {}
         }
     }
@@ -166,6 +557,8 @@ fn lower_with(program: &Program, strict_mode: bool) -> Result<RuntimeTemplate, L
         components,
         root,
         generators,
+        functions,
+        top_levels,
         modules: Vec::new(),
         manifest: RuntimeTemplate::new().manifest,
         strict_mode: false,
@@ -241,6 +634,156 @@ fn strip_strict(n: ReactNode) -> ReactNode {
     }
 }
 
+/// Plain (non-pattern) parameter names from a `Vec<Param>`: the IR and
+/// runtime still take explicit named params; destructuring params lower to
+/// binds inside the body (full pattern support arrives with T10 lowering).
+fn plain_param_names(params: &[Param]) -> Vec<String> {
+    params
+        .iter()
+        .filter_map(|p| match &p.pattern {
+            Pattern::Name { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Lower parameter bindings to `(positional_names, prepend_stmts)`: plain
+/// names pass through; `x = dflt` prepends an `undefined`-guarded default
+/// assign; destructuring patterns take a synthetic `$p{i}` positional and
+/// prepend the pattern expansion. `...rest` is a precise error (call-site
+/// arg-vector support has not landed).
+fn lower_param_binds(
+    params: &[Param],
+    index: &HashMap<String, usize>,
+    what: &str,
+) -> Result<(Vec<String>, Vec<JsExpr>), LowerError> {
+    let mut names = Vec::with_capacity(params.len());
+    let mut prepend = Vec::new();
+    for (i, p) in params.iter().enumerate() {
+        if p.rest {
+            return Err(LowerError::Unsupported(format!(
+                "rest parameter in {what} (pass explicit arguments instead)"
+            )));
+        }
+        // A default on a destructuring PATTERN (`([x] = pair)`) is rejected
+        // precisely; plain defaults (`x = dflt`, either level) become an
+        // `undefined`-guarded assign.
+        let pat_default = match &p.pattern {
+            Pattern::Name { default, .. } => default.clone(),
+            _ if p.default.is_some() => {
+                return Err(LowerError::Unsupported(format!(
+                    "default on a destructuring pattern in {what} (destructure first, then default)"
+                )));
+            }
+            _ => None,
+        };
+        let default = p.default.clone().or(pat_default);
+        match &p.pattern {
+            Pattern::Name { name, .. } => {
+                names.push(name.clone());
+                if let Some(d) = &default {
+                    prepend.push(default_assign(name, d, index)?);
+                }
+            }
+            pattern => {
+                let synth = format!("$p{i}");
+                names.push(synth.clone());
+                lower_pattern_into(pattern, &JsExpr::Var(synth), index, &mut prepend)?;
+            }
+        }
+    }
+    Ok((names, prepend))
+}
+
+/// `name = (name === undefined ? dflt : name)` — parameter defaulting.
+fn default_assign(
+    name: &str,
+    dflt: &r2n_ast::expr::Expr,
+    index: &HashMap<String, usize>,
+) -> Result<JsExpr, LowerError> {
+    Ok(JsExpr::Assign {
+        target: Box::new(JsExpr::Var(name.to_string())),
+        value: Box::new(JsExpr::If {
+            cond: Box::new(JsExpr::Bin {
+                op: JsBinOp::StrictEq,
+                left: Box::new(JsExpr::Var(name.to_string())),
+                right: Box::new(JsExpr::Lit(r2n_ast::lit::Literal::Undefined)),
+            }),
+            then: Box::new(lower_expr(dflt, index)?),
+            else_: Box::new(JsExpr::Var(name.to_string())),
+        }),
+    })
+}
+
+/// All names bound by a pattern (for locals/capture computation).
+/// All names bound by a pattern (for linker export surfaces and
+/// locals/capture computation). Public so the linker shares one definition.
+pub fn pattern_names(pat: &Pattern, out: &mut Vec<String>) {
+    match pat {
+        Pattern::Name { name, .. } => out.push(name.clone()),
+        Pattern::Object { props, rest } => {
+            for pr in props {
+                if let Some(alias) = &pr.alias {
+                    pattern_names(alias, out);
+                } else {
+                    out.push(pr.key.clone());
+                }
+            }
+            if let Some(r) = rest {
+                out.push(r.clone());
+            }
+        }
+        Pattern::Array { items, rest } => {
+            for it in items.iter().flatten() {
+                pattern_names(it, out);
+            }
+            if let Some(r) = rest {
+                out.push(r.clone());
+            }
+        }
+    }
+}
+
+/// Names bound by a binding pattern (destructuring declarations expose every
+/// bound name to later statements in the same body). Public for the linker.
+pub fn binding_names(pat: &Pattern) -> Vec<String> {
+    let mut out = Vec::new();
+    pattern_names(pat, &mut out);
+    out
+}
+
+/// A component-shaped function: `(params, body)` of an `export function`
+/// declaration or an inline function expression, unwrapping `memo(...)`
+/// (a perf hint — semantically identity). Used by the linker (export
+/// surfaces, entry-root fallback) and the lowerer (component lowering):
+/// one predicate, shared semantics.
+///
+/// Matches:
+/// - `Expr::Function { params, body }` directly (e.g. `memo(function Item()
+///   {...})` unwraps to the inner function), and
+/// - any `Call` whose callee is the identifier `memo` with a single
+///   function-valued argument (nesting `memo(memo(f))` unwraps fully).
+pub fn component_fn_of(expr: &r2n_ast::expr::Expr) -> Option<(&Vec<Param>, &Vec<Stmt>)> {
+    match expr {
+        r2n_ast::expr::Expr::Function { params, body, .. } => Some((params, body)),
+        r2n_ast::expr::Expr::Call { callee, args } => {
+            let is_memo = matches!(
+                &**callee,
+                r2n_ast::expr::Expr::Ident { name, .. } if name == "memo"
+            );
+            if !is_memo || args.len() != 1 {
+                return None;
+            }
+            let inner = match &args[0] {
+                r2n_ast::expr::CallArg::Expr(e) => e,
+                r2n_ast::expr::CallArg::Spread(_) => return None,
+            };
+            component_fn_of(inner)
+        }
+        _ => None,
+    }
+}
+
 /// A component body being lowered: an ordered list of render-time steps.
 /// `let`/`const` bindings and side-effecting expression statements
 /// (`useEffect(...)`, `console.log(...)`) appear in SOURCE order, exactly like
@@ -261,24 +804,90 @@ fn lower_component(
         bindings: Vec::new(),
         body: ReactNode::Text(JsExpr::Lit(r2n_ast::lit::Literal::Null)),
     };
-    // Local names in scope for JSX tag resolution: params plus every `let`/
-    // `const` declared in the body. Alongside `index`, these let the lowerer
-    // decide whether an uppercase `<C/>` is a static component (`index`), a
-    // local component VALUE (`locals` → `ReactNode::ComponentExpr`), or
-    // genuinely undefined (`UnknownComponent`).
-    let locals: std::collections::HashSet<String> = c
-        .params
+    // Local names in scope for JSX tag resolution: every param-bound name
+    // (destructured params contribute all their names) plus every
+    // `let`/`const`/destructuring name declared in the body. Alongside
+    // `index`, these let the lowerer decide whether an uppercase `<C/>` is a
+    // static component (`index`), a local component VALUE (`locals` →
+    // `ReactNode::ComponentExpr`), or genuinely undefined
+    // (`UnknownComponent`).
+    let mut param_names = Vec::new();
+    for p in &c.params {
+        pattern_names(&p.pattern, &mut param_names);
+    }
+    let locals: std::collections::HashSet<String> = param_names
         .iter()
         .cloned()
-        .chain(c.body.iter().filter_map(|s| match s {
-            Stmt::Let { name, .. } | Stmt::Const { name, .. } => Some(name.clone()),
-            _ => None,
+        .chain(c.body.iter().flat_map(|s| match s {
+            Stmt::Let { name, .. } | Stmt::Const { name, .. } => vec![name.clone()],
+            Stmt::Destructure { pattern, .. } => binding_names(pattern),
+            _ => Vec::new(),
         }))
         .collect();
+    // Param defaults (`editing = false`) apply at render time, before the
+    // body: the engine binds every param by prop NAME (missing → undefined),
+    // and these guarded assigns fill in the defaults.
+    for p in &c.params {
+        let dflt: Option<(String, r2n_ast::expr::Expr)> = match &p.pattern {
+            Pattern::Name { name, default } => p
+                .default
+                .clone()
+                .or(default.clone())
+                .map(|d| (name.clone(), d)),
+            _ if p.default.is_some() => {
+                return Err(LowerError::Unsupported(format!(
+                    "default on a destructuring param in component {}",
+                    c.name
+                )));
+            }
+            _ => None,
+        };
+        if let Some((name, d)) = dflt {
+            let read = JsExpr::Var(name.clone());
+            out.bindings.push((
+                name.clone(),
+                JsExpr::Assign {
+                    target: Box::new(read.clone()),
+                    value: Box::new(JsExpr::If {
+                        cond: Box::new(JsExpr::Bin {
+                            op: JsBinOp::StrictEq,
+                            left: Box::new(read.clone()),
+                            right: Box::new(JsExpr::Lit(r2n_ast::lit::Literal::Undefined)),
+                        }),
+                        then: Box::new(lower_expr(&d, index)?),
+                        else_: Box::new(read),
+                    }),
+                },
+            ));
+        }
+    }
     for stmt in &c.body {
         match stmt {
             Stmt::Let { name, value } | Stmt::Const { name, value } => {
                 out.bindings.push((name.clone(), lower_expr(value, index)?));
+            }
+            Stmt::Destructure { pattern, value, .. } => {
+                // `const [a, b] = expr;` / `const {k} = expr;` — expand to
+                // a `$dstN` temp binding plus one binding per name (bindings
+                // evaluate in order into the render env, so temps work).
+                let v = lower_expr(value, index)?;
+                let mut tmp = Vec::new();
+                lower_destructure(pattern, &v, index, &mut tmp)?;
+                for e in tmp {
+                    match e {
+                        JsExpr::Assign { target, value } => match *target {
+                            JsExpr::Var(n) => out.bindings.push((n, *value)),
+                            other => out.bindings.push((
+                                "$stmt".to_string(),
+                                JsExpr::Assign {
+                                    target: Box::new(other),
+                                    value,
+                                },
+                            )),
+                        },
+                        other => out.bindings.push(("$stmt".to_string(), other)),
+                    }
+                }
             }
             // A bare expression statement runs at render time, in source
             // order (this is how `useEffect(fn, deps)` registers).
@@ -287,6 +896,16 @@ fn lower_component(
                 .push(("$stmt".to_string(), lower_expr(e, index)?)),
             Stmt::Return(expr) => {
                 out.body = lower_renderable(expr, index, &locals)?;
+            }
+            // General statement grammar (T09b/T10): control flow inside a
+            // component render body lowers when the runtime supports it;
+            // anything else is a precise error, not a silent miscompile.
+            other => {
+                return Err(LowerError::Unsupported(format!(
+                    "statement in component {} render body: {}",
+                    c.name,
+                    stmt_kind(other)
+                )))
             }
         }
     }
@@ -314,11 +933,16 @@ fn lower_component(
     // a LATER binding is still free here — which is correct: React would also
     // fail to see a `let` that hasn't run yet. Source order makes the common
     // case (declare, then use) work naturally.
-    let local_names: std::collections::HashSet<String> = c
-        .params
+    // Params are the destructured names (the engine binds every param by
+    // prop NAME, so `{dispatch}` receives the `dispatch` prop directly).
+    let mut final_params = Vec::new();
+    for p in &c.params {
+        pattern_names(&p.pattern, &mut final_params);
+    }
+    let local_names: std::collections::HashSet<String> = final_params
         .iter()
-        .chain(out.bindings.iter().map(|(n, _)| n))
         .cloned()
+        .chain(out.bindings.iter().map(|(n, _)| n.clone()))
         .collect();
     let captures = free_vars_of_body(&out.bindings, &out.body)
         .into_iter()
@@ -326,12 +950,29 @@ fn lower_component(
         .collect();
     Ok(RuntimeComponent {
         name: c.name.clone(),
-        params: c.params.clone(),
+        params: final_params,
         captures,
         bindings: out.bindings,
         body: out.body,
         class: None,
     })
+}
+
+/// Short kind name of a statement for precise `Unsupported` errors.
+fn stmt_kind(s: &Stmt) -> &'static str {
+    match s {
+        Stmt::Let { .. } => "let",
+        Stmt::Const { .. } => "const",
+        Stmt::Destructure { .. } => "destructuring declaration",
+        Stmt::Return(_) => "return",
+        Stmt::Expr(_) => "expression statement",
+        Stmt::If { .. } => "if statement",
+        Stmt::While { .. } => "while loop",
+        Stmt::For { .. } => "for loop",
+        Stmt::Switch { .. } => "switch statement",
+        Stmt::Break => "break",
+        Stmt::Continue => "continue",
+    }
 }
 
 /// Lower a class component: `render()` becomes the component body; other
@@ -364,12 +1005,17 @@ fn lower_class(
                     }),
                     Stmt::Return(expr) => Ok(lower_expr(expr, index)?),
                     Stmt::Expr(e) => Ok(lower_expr(e, index)?),
+                    other => Err(LowerError::Unsupported(format!(
+                        "statement in ES class method {}: {}",
+                        m.name,
+                        stmt_kind(other)
+                    ))),
                 })
                 .collect::<Result<_, _>>()?;
             methods.push((
                 m.name.clone(),
                 ClassMethod {
-                    params: m.params.clone(),
+                    params: plain_param_names(&m.params),
                     body: JsExpr::Block(body_stmts),
                 },
             ));
@@ -393,9 +1039,10 @@ fn lower_class(
         .iter()
         .filter(|m| m.name == "render")
         .flat_map(|m| m.body.iter())
-        .filter_map(|st| match st {
-            Stmt::Let { name, .. } | Stmt::Const { name, .. } => Some(name.clone()),
-            _ => None,
+        .flat_map(|st| match st {
+            Stmt::Let { name, .. } | Stmt::Const { name, .. } => vec![name.clone()],
+            Stmt::Destructure { pattern, .. } => binding_names(pattern),
+            _ => Vec::new(),
         })
         .collect();
     for m in &c.methods {
@@ -412,6 +1059,13 @@ fn lower_class(
                     Stmt::Expr(e) => out
                         .bindings
                         .push(("$stmt".to_string(), lower_expr(e, index)?)),
+                    other => {
+                        return Err(LowerError::Unsupported(format!(
+                            "statement in class {} render body: {}",
+                            c.name,
+                            stmt_kind(other)
+                        )))
+                    }
                 }
             }
         }
@@ -458,12 +1112,17 @@ fn lower_class(
                 }),
                 Stmt::Return(expr) => Ok(lower_expr(expr, index)?),
                 Stmt::Expr(e) => Ok(lower_expr(e, index)?),
+                other => Err(LowerError::Unsupported(format!(
+                    "statement in class method {}: {}",
+                    m.name,
+                    stmt_kind(other)
+                ))),
             })
             .collect::<Result<_, _>>()?;
         methods.push((
             m.name.clone(),
             ClassMethod {
-                params: m.params.clone(),
+                params: plain_param_names(&m.params),
                 body: JsExpr::Block(body_stmts),
             },
         ));
@@ -523,28 +1182,89 @@ fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, Low
         Expr::Call { callee, args } => {
             // Index access `arr[idx]` is emitted by the parser as
             // `Call(Member(base, "get"), [idx])`; lower it to `JsExpr::Index`.
+            // (`.get` with a spread arg is a real method call, not an index.)
             if let Expr::Member { base, prop } = &**callee {
                 if prop == "get" && args.len() == 1 {
-                    return Ok(JsExpr::Index {
-                        base: Box::new(lower_expr(base, index)?),
-                        key: Box::new(lower_expr(&args[0], index)?),
-                    });
+                    if let r2n_ast::expr::CallArg::Expr(key) = &args[0] {
+                        return Ok(JsExpr::Index {
+                            base: Box::new(lower_expr(base, index)?),
+                            key: Box::new(lower_expr(key, index)?),
+                        });
+                    }
                 }
             }
             JsExpr::Call {
                 callee: Box::new(lower_expr(callee, index)?),
                 args: args
                     .iter()
-                    .map(|a| lower_expr(a, index))
+                    .map(|a| lower_call_arg(a, index))
                     .collect::<Result<_, _>>()?,
             }
         }
         Expr::Array(items) => JsExpr::Array(
             items
                 .iter()
-                .map(|i| lower_expr(i, index))
+                .map(|i| lower_array_item(i, index))
                 .collect::<Result<_, _>>()?,
         ),
+        Expr::Object(items) => JsExpr::Object(
+            items
+                .iter()
+                .map(|i| lower_object_item(i, index))
+                .collect::<Result<_, _>>()?,
+        ),
+        Expr::Template { parts, exprs } => {
+            // `` `a${x}b` `` lowers to string concatenation: the cooked parts
+            // are string literals joined with `+` around each interpolation.
+            // A template with no interpolations is a single literal.
+            let mut acc: Option<JsExpr> = None;
+            let push_str = |s: &str, acc: &mut Option<JsExpr>| {
+                if s.is_empty() {
+                    return;
+                }
+                let lit = JsExpr::Lit(r2n_ast::lit::Literal::String(s.to_string()));
+                *acc = Some(match acc.take() {
+                    None => lit,
+                    Some(prev) => JsExpr::Bin {
+                        op: JsBinOp::Add,
+                        left: Box::new(prev),
+                        right: Box::new(lit),
+                    },
+                });
+            };
+            for (i, part) in parts.iter().enumerate() {
+                push_str(part, &mut acc);
+                if i < exprs.len() {
+                    let e = lower_expr(&exprs[i], index)?;
+                    acc = Some(match acc.take() {
+                        None => e,
+                        Some(prev) => JsExpr::Bin {
+                            op: JsBinOp::Add,
+                            left: Box::new(prev),
+                            right: Box::new(e),
+                        },
+                    });
+                }
+            }
+            acc.unwrap_or_else(|| JsExpr::Lit(r2n_ast::lit::Literal::String(String::new())))
+        }
+        Expr::Update { op, target, prefix } => JsExpr::Update {
+            inc: matches!(op, r2n_ast::expr::UpdateOp::Inc),
+            target: Box::new(lower_expr(target, index)?),
+            prefix: *prefix,
+        },
+        Expr::CompoundAssign { op, target, value } => {
+            // `x += v` desugared at parse time to `x = x + v`; the lowerer
+            // only ever sees Assign — this arm is unreachable but total.
+            JsExpr::Assign {
+                target: Box::new(lower_expr(target, index)?),
+                value: Box::new(JsExpr::Bin {
+                    op: lower_binop(*op),
+                    left: Box::new(lower_expr(target, index)?),
+                    right: Box::new(lower_expr(value, index)?),
+                }),
+            }
+        }
         Expr::Ternary { cond, then, else_ } => JsExpr::If {
             cond: Box::new(lower_expr(cond, index)?),
             then: Box::new(lower_expr(then, index)?),
@@ -555,17 +1275,52 @@ fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, Low
             body,
             async_,
         } => {
+            // Param patterns/defaults bind at call time via prepended
+            // assigns (same protocol as plain functions).
+            let (names, prepend) = lower_param_binds(params, index, "arrow function")?;
             if *async_ {
+                if !prepend.is_empty() {
+                    return Err(LowerError::Unsupported(
+                        "destructuring/default params on async arrows (use plain params)"
+                            .to_string(),
+                    ));
+                }
                 JsExpr::AsyncFn {
-                    params: params.clone(),
+                    params: names,
                     segments: lower_async_segments(body, index)?,
                 }
             } else {
+                // No pattern binds: keep the body unwrapped (stable IR shape
+                // for the common plain-params case).
+                let lowered = lower_expr(body, index)?;
+                let body = if prepend.is_empty() {
+                    lowered
+                } else {
+                    let mut stmts = prepend;
+                    stmts.push(lowered);
+                    JsExpr::Block(stmts)
+                };
                 JsExpr::Closure {
-                    params: params.clone(),
+                    params: names,
                     captures: vec![], // captures computed lazily by the runtime frame
-                    body: Box::new(lower_expr(body, index)?),
+                    body: Box::new(body),
                 }
+            }
+        }
+        Expr::Function { name, params, body } => {
+            // A function expression is a closure over a full statement body:
+            // statements lower via `lower_stmt`, so early `return`, loops,
+            // and `switch` all ride the runtime's control-flow channel
+            // (caught at the call boundary, like plain functions).
+            let label = name.as_deref().unwrap_or("anonymous function");
+            let (names, mut stmts) = lower_param_binds(params, index, label)?;
+            for st in body {
+                lower_stmt(st, label, index, &mut stmts)?;
+            }
+            JsExpr::Closure {
+                params: names,
+                captures: vec![],
+                body: Box::new(JsExpr::Block(stmts)),
             }
         }
         Expr::Await { .. } => {
@@ -592,12 +1347,30 @@ fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, Low
             callee: Box::new(lower_expr(callee, index)?),
             args: args
                 .iter()
-                .map(|a| lower_expr(a, index))
+                .map(|a| lower_call_arg(a, index))
                 .collect::<Result<Vec<_>, _>>()?,
         },
         Expr::Throw(value) => JsExpr::Throw {
             value: Box::new(lower_expr(value, index)?),
         },
+        // `return` in block-expression position (try bodies): raises
+        // function-return control flow (caught at the call boundary and
+        // the async/generator step boundaries).
+        Expr::Return(value) => JsExpr::Return(match value {
+            Some(v) => Some(Box::new(lower_expr(v, index)?)),
+            None => None,
+        }),
+        Expr::While { cond, body } => JsExpr::While {
+            cond: Box::new(lower_expr(cond, index)?),
+            body: Box::new(lower_expr(body, index)?),
+            step: None,
+        },
+        // `break`/`continue` in block-expression position lower to the
+        // runtime's control-flow channel: the innermost loop/switch driver
+        // catches them; a stray use is a precise RUNTIME error naming the
+        // construct (total lowering — no silent miscompile).
+        Expr::Break => JsExpr::Break,
+        Expr::Continue => JsExpr::Continue,
         Expr::Try {
             block,
             catch_param,
@@ -640,6 +1413,52 @@ fn lower_expr(expr: &Expr, index: &HashMap<String, usize>) -> Result<JsExpr, Low
     })
 }
 
+/// Lower one call argument: `...spread` becomes a runtime `SpreadArg`
+/// (expanded at call time); plain expressions lower directly.
+fn lower_call_arg(
+    arg: &r2n_ast::expr::CallArg,
+    index: &HashMap<String, usize>,
+) -> Result<JsExpr, LowerError> {
+    match arg {
+        r2n_ast::expr::CallArg::Expr(e) => lower_expr(e, index),
+        r2n_ast::expr::CallArg::Spread(e) => Ok(JsExpr::SpreadArg(Box::new(lower_expr(e, index)?))),
+    }
+}
+
+/// Lower one array-literal item.
+fn lower_array_item(
+    item: &r2n_ast::expr::ArrayItem,
+    index: &HashMap<String, usize>,
+) -> Result<crate::js::JsArrayItem, LowerError> {
+    match item {
+        r2n_ast::expr::ArrayItem::Expr(e) => {
+            Ok(crate::js::JsArrayItem::Expr(lower_expr(e, index)?))
+        }
+        r2n_ast::expr::ArrayItem::Spread(e) => {
+            Ok(crate::js::JsArrayItem::Spread(lower_expr(e, index)?))
+        }
+    }
+}
+
+/// Lower one object-literal item.
+fn lower_object_item(
+    item: &r2n_ast::expr::ObjectItem,
+    index: &HashMap<String, usize>,
+) -> Result<crate::js::JsObjectItem, LowerError> {
+    match item {
+        r2n_ast::expr::ObjectItem::Shorthand(name) => {
+            Ok(crate::js::JsObjectItem::Shorthand(name.clone()))
+        }
+        r2n_ast::expr::ObjectItem::Prop(k, v) => Ok(crate::js::JsObjectItem::Prop(
+            k.clone(),
+            lower_expr(v, index)?,
+        )),
+        r2n_ast::expr::ObjectItem::Spread(e) => {
+            Ok(crate::js::JsObjectItem::Spread(lower_expr(e, index)?))
+        }
+    }
+}
+
 /// Lower a top-level `function*` declaration (M2-T08): the body splits into
 /// yield-delimited segments (the same machine async fns use — generators are
 /// the PULL-based twin: `next()` advances instead of a scheduler).
@@ -669,13 +1488,17 @@ fn lower_generator_fn(
                 },
                 other => other.clone(),
             }),
+            other => Err(LowerError::Unsupported(format!(
+                "statement in generator body: {}",
+                stmt_kind(other)
+            ))),
         })
         .collect::<Result<_, _>>()?;
     let refs: Vec<&Expr> = exprs.iter().collect();
     let segments = lower_segments(&refs, index, true)?;
     Ok(crate::runtime::GeneratorIr {
         name: g.name.clone(),
-        params: g.params.clone(),
+        params: plain_param_names(&g.params),
         segments,
     })
 }
@@ -802,11 +1625,39 @@ fn contains_await(e: &Expr) -> bool {
         Expr::Ternary { cond, then, else_ } => {
             contains_await(cond) || contains_await(then) || contains_await(else_)
         }
-        Expr::Call { callee, args } => contains_await(callee) || args.iter().any(contains_await),
-        Expr::New { callee, args } => contains_await(callee) || args.iter().any(contains_await),
+        Expr::Call { callee, args } => {
+            contains_await(callee)
+                || args.iter().any(|a| match a {
+                    r2n_ast::expr::CallArg::Expr(e) => contains_await(e),
+                    r2n_ast::expr::CallArg::Spread(e) => contains_await(e),
+                })
+        }
+        Expr::New { callee, args } => {
+            contains_await(callee)
+                || args.iter().any(|a| match a {
+                    r2n_ast::expr::CallArg::Expr(e) => contains_await(e),
+                    r2n_ast::expr::CallArg::Spread(e) => contains_await(e),
+                })
+        }
         Expr::Member { base, .. } => contains_await(base),
-        Expr::Array(items) => items.iter().any(contains_await),
+        Expr::Array(items) => items.iter().any(|i| match i {
+            r2n_ast::expr::ArrayItem::Expr(e) => contains_await(e),
+            r2n_ast::expr::ArrayItem::Spread(e) => contains_await(e),
+        }),
+        Expr::Object(items) => items.iter().any(|i| match i {
+            r2n_ast::expr::ObjectItem::Shorthand(_) => false,
+            r2n_ast::expr::ObjectItem::Prop(_, v) => contains_await(v),
+            r2n_ast::expr::ObjectItem::Spread(e) => contains_await(e),
+        }),
+        Expr::Template { exprs, .. } => exprs.iter().any(contains_await),
+        Expr::Update { target, .. } => contains_await(target),
+        Expr::CompoundAssign { target, value, .. } => {
+            contains_await(target) || contains_await(value)
+        }
+        Expr::While { cond, body } => contains_await(cond) || contains_await(body),
+        Expr::Break | Expr::Continue => false,
         Expr::Block(stmts) => stmts.iter().any(contains_await),
+        Expr::Return(v) => v.as_ref().is_some_and(|e| contains_await(e)),
         _ => false,
     }
 }
@@ -828,6 +1679,8 @@ fn lower_binop(op: BinOp) -> JsBinOp {
         BinOp::Ge => JsBinOp::Ge,
         BinOp::And => JsBinOp::And,
         BinOp::Or => JsBinOp::Or,
+        BinOp::Nullish => JsBinOp::Nullish,
+        BinOp::BitOr => JsBinOp::BitOr,
     }
 }
 
@@ -1181,6 +2034,10 @@ fn try_lower_list(
         },
         _ => return Ok(None),
     };
+    let arrow = match arrow {
+        r2n_ast::expr::CallArg::Expr(e) => e,
+        r2n_ast::expr::CallArg::Spread(_) => return Ok(None),
+    };
     let (params, arrow_body) = match arrow {
         Expr::Arrow { params, body, .. } => (params, body),
         _ => return Ok(None),
@@ -1190,10 +2047,15 @@ fn try_lower_list(
         Expr::Element(_) => lower_renderable(arrow_body, index, locals)?,
         _ => return Ok(None),
     };
-    // The per-element variable name is the arrow's first parameter.
+    // The per-element variable name is the arrow's first PLAIN parameter.
+    // (Destructuring `.map(({a}) => ...)` lowers the arrow normally and
+    // skips the List fast path — correct, not silent.)
     let item_var = params
         .first()
-        .cloned()
+        .and_then(|p| match &p.pattern {
+            Pattern::Name { name, .. } => Some(name.clone()),
+            _ => None,
+        })
         .unwrap_or_else(|| "$item".to_string());
     // Rewrite every occurrence of `item_var` in the item tree and key to the
     // runtime's reserved name `$item`, so the runtime can substitute the actual
@@ -1251,6 +2113,7 @@ fn subst_expr(e: JsExpr, from: &str, to: &str) -> JsExpr {
             callee: Box::new(subst_expr(*callee, from, to)),
             args: args.into_iter().map(|a| subst_expr(a, from, to)).collect(),
         },
+        JsExpr::SpreadArg(e) => JsExpr::SpreadArg(Box::new(subst_expr(*e, from, to))),
         JsExpr::New { callee, args } => JsExpr::New {
             callee: Box::new(subst_expr(*callee, from, to)),
             args: args.into_iter().map(|a| subst_expr(a, from, to)).collect(),
@@ -1264,9 +2127,75 @@ fn subst_expr(e: JsExpr, from: &str, to: &str) -> JsExpr {
             captures,
             body: Box::new(subst_expr(*body, from, to)),
         },
-        JsExpr::Array(items) => {
-            JsExpr::Array(items.into_iter().map(|i| subst_expr(i, from, to)).collect())
-        }
+        JsExpr::Array(items) => JsExpr::Array(
+            items
+                .into_iter()
+                .map(|i| match i {
+                    crate::js::JsArrayItem::Expr(e) => {
+                        crate::js::JsArrayItem::Expr(subst_expr(e, from, to))
+                    }
+                    crate::js::JsArrayItem::Spread(e) => {
+                        crate::js::JsArrayItem::Spread(subst_expr(e, from, to))
+                    }
+                })
+                .collect(),
+        ),
+        JsExpr::Object(items) => JsExpr::Object(
+            items
+                .into_iter()
+                .map(|i| match i {
+                    crate::js::JsObjectItem::Shorthand(n) => {
+                        if n == from {
+                            crate::js::JsObjectItem::Shorthand(to.to_string())
+                        } else {
+                            crate::js::JsObjectItem::Shorthand(n)
+                        }
+                    }
+                    crate::js::JsObjectItem::Prop(k, v) => {
+                        crate::js::JsObjectItem::Prop(k, subst_expr(v, from, to))
+                    }
+                    crate::js::JsObjectItem::Spread(e) => {
+                        crate::js::JsObjectItem::Spread(subst_expr(e, from, to))
+                    }
+                })
+                .collect(),
+        ),
+        JsExpr::While { cond, body, step } => JsExpr::While {
+            cond: Box::new(subst_expr(*cond, from, to)),
+            body: Box::new(subst_expr(*body, from, to)),
+            step: step.map(|s| Box::new(subst_expr(*s, from, to))),
+        },
+        JsExpr::Switch {
+            disc,
+            cases,
+            default,
+        } => JsExpr::Switch {
+            disc: Box::new(subst_expr(*disc, from, to)),
+            cases: cases
+                .into_iter()
+                .map(|c| crate::js::SwitchCase {
+                    test: subst_expr(c.test, from, to),
+                    body: c
+                        .body
+                        .into_iter()
+                        .map(|s| subst_expr(s, from, to))
+                        .collect(),
+                })
+                .collect(),
+            default: default.map(|d| d.into_iter().map(|s| subst_expr(s, from, to)).collect()),
+        },
+        JsExpr::Break => JsExpr::Break,
+        JsExpr::Continue => JsExpr::Continue,
+        JsExpr::Return(v) => JsExpr::Return(v.map(|e| Box::new(subst_expr(*e, from, to)))),
+        JsExpr::Update {
+            inc,
+            target,
+            prefix,
+        } => JsExpr::Update {
+            inc,
+            target: Box::new(subst_expr(*target, from, to)),
+            prefix,
+        },
         JsExpr::Block(stmts) => {
             JsExpr::Block(stmts.into_iter().map(|s| subst_expr(s, from, to)).collect())
         }
@@ -1462,9 +2391,58 @@ fn collect_free(e: &JsExpr, bound: &std::collections::HashSet<String>, out: &mut
         }
         JsExpr::Array(items) => {
             for i in items {
-                collect_free(i, bound, out);
+                match i {
+                    crate::js::JsArrayItem::Expr(e) => collect_free(e, bound, out),
+                    crate::js::JsArrayItem::Spread(e) => collect_free(e, bound, out),
+                }
             }
         }
+        JsExpr::Object(items) => {
+            for i in items {
+                match i {
+                    crate::js::JsObjectItem::Shorthand(n) => {
+                        if !bound.contains(n) && !out.contains(n) {
+                            out.push(n.clone());
+                        }
+                    }
+                    crate::js::JsObjectItem::Prop(_, v) => collect_free(v, bound, out),
+                    crate::js::JsObjectItem::Spread(e) => collect_free(e, bound, out),
+                }
+            }
+        }
+        JsExpr::While { cond, body, step } => {
+            collect_free(cond, bound, out);
+            collect_free(body, bound, out);
+            if let Some(s) = step {
+                collect_free(s, bound, out);
+            }
+        }
+        JsExpr::Switch {
+            disc,
+            cases,
+            default,
+        } => {
+            collect_free(disc, bound, out);
+            for c in cases {
+                collect_free(&c.test, bound, out);
+                for s in &c.body {
+                    collect_free(s, bound, out);
+                }
+            }
+            if let Some(d) = default {
+                for s in d {
+                    collect_free(s, bound, out);
+                }
+            }
+        }
+        JsExpr::Break | JsExpr::Continue => {}
+        JsExpr::Return(v) => {
+            if let Some(e) = v {
+                collect_free(e, bound, out);
+            }
+        }
+        JsExpr::Update { target, .. } => collect_free(target, bound, out),
+        JsExpr::SpreadArg(e) => collect_free(e, bound, out),
         JsExpr::Block(stmts) => {
             for s in stmts {
                 collect_free(s, bound, out);
