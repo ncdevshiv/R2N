@@ -317,7 +317,7 @@ phases:
 
   - id: "M2"
     name: "JavaScript Compatibility — Level 2"
-    status: "in-progress"   # M2-T01..T09 done (value model, objects, closures, classes, coercion, exceptions, promises, generators, modules); T09b init order, destructuring, symbols, regexp, GC, TS hints, test262 remain
+    status: "in-progress"   # M2-T01..T09, T15 done (value model, objects, closures, classes, coercion, exceptions, promises, generators, modules, test262 harness); T09b init order, destructuring, symbols, regexp, GC, TS hints remain
     window: { start_week: 12, end_week: 20 }
     color: "#fbbf24"
     blurb: "Full ECMAScript semantics in the compatibility engine: closures, classes, prototypes, coercion, exceptions, promises, generators, modules — the layer that makes arbitrary React code actually run."
@@ -385,7 +385,7 @@ phases:
       - id: "M2-T15"
         title: "test262-subset conformance harness + published compatibility score"
         priority: "P0"
-        done: false
+        done: true
 
   - id: "M3"
     name: "Optimization Pipeline — Specialization"

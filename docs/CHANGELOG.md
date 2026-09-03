@@ -45,6 +45,18 @@ correspond to git tags that must point at a green CI commit on main.
 - 3 new runtime tests for the namespace-member JSX tag (`<m.Widget/>` bare, with
   props+children, and a namespace object passed as a prop then rendered as
   `<P.Widget/>`). Suite is now 257 green, clippy clean.
+- test262-aligned conformance harness (M2-T15): `crates/r2n-runtime/tests/
+  test262_subset.rs` pins 130 ECMA-262 semantics authored in the dialect
+  (upstream test262 files need `var`/loops/`assert()` the engine doesn't have),
+  with 14 category tests, an env-gated triage dump (`R2N_TRIAGE=1`), and a
+  `published_scorecard_matches_harness` consistency test that fails CI unless
+  docs/COMPATIBILITY.md agrees with the harness's computed score.
+- Published compatibility scorecard (M2-T15): `docs/COMPATIBILITY.md` records
+  **117/130 = 90%** of the test262-aligned subset, the 13 known gaps/divergences
+  with reasons (BigInt+Number TypeError, `-`/`<` ToNumber coercion, ≥1e21 and
+  <1e-6 exponent formatting, string-index `undefined`, broken function identity
+  `f === f`, and the six deliberate M2-T05 divergences), and the out-of-scope
+  surface. Suite is now 273 green, clippy clean.
 
 
 ## v0.1.0 — 2026-08-30

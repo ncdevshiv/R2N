@@ -1,8 +1,8 @@
 # R2N — Complete Execution Checklist
 
 > **R2N — React to Native** — Native compiler + runtime platform that executes existing React applications with zero JavaScript at runtime
-> Generated 2026-08-29 · updated 2026-09-03 · **63/107** tasks done (59%).
-> Audit basis: every task was verified against the actual implementation and test suite (257 tests green, clippy clean, CLI verified end-to-end on all examples), not against earlier claims.
+> Generated 2026-08-29 · updated 2026-09-03 · **64/107** tasks done (60%).
+> Audit basis: every task was verified against the actual implementation and test suite (273 tests green, clippy clean, JS compatibility 117/130 = 90% of the test262-aligned subset, CLI verified end-to-end on all examples), not against earlier claims.
 
 **How to use:** check items off in the interactive tracker ([index.html](index.html)) — it saves live in your browser. This file, [roadmap.yaml](roadmap.yaml), and [roadmap.toml](roadmap.toml) are the portable record; update them when a milestone closes.
 
@@ -94,7 +94,7 @@ _Behavioral compatibility with React core: full hook set, keys, context, effects
 
 ## M2 — JavaScript Compatibility — Level 2
 
-`IN PROGRESS` · weeks 12–20 · progress **9/16** (56%)
+`IN PROGRESS` · weeks 12–20 · progress **10/16** (63%)
 
 _Full ECMAScript semantics in the compatibility engine: closures, classes, prototypes, coercion, exceptions, promises, generators, modules — the layer that makes arbitrary React code actually run._
 
@@ -113,7 +113,7 @@ _Full ECMAScript semantics in the compatibility engine: closures, classes, proto
 - [ ] **P2** — RegExp support (embed engine or implement subset)
 - [ ] **P0** — GC strategy (tracing / refcount / hybrid) honoring observable lifetime semantics
 - [ ] **P2** — TypeScript type consumption → optimization hints only (semantics stay JS)
-- [ ] **P0** — test262-subset conformance harness + published compatibility score
+- [x] **P0** — test262-subset conformance harness + published compatibility score: upstream test262 files cannot run yet (they need `var`/loops/`switch`/`assert()`/template literals — the dialect has none), so the harness is test262-ALIGNED: 130 authored cases each pinning ONE ECMA-262 semantic in the dialect with its ECMA-section reference, observed behaviorally via exact `console.log` comparison after one flush (async drains to fixpoint). Honest scoring: ECMA-conformant cases are hard regression gates; 13 known gaps/divergences pin today's output, count as not-passing, and are listed in docs/COMPATIBILITY.md with reasons — a fix fails the consistency test until promoted. **Published score: 117/130 = 90%** (100% on values/==/closures/objects/exceptions/promises/generators/classes; gaps in `-`/`<` coercion, BigInt-mixing TypeError, ≥1e21/<1e-6 number formatting, string-index undefined, function identity `f === f`); 14 category tests + `published_scorecard_matches_harness` consistency test + env-gated triage/scorecard dumps; catches included a NEWLY-FOUND engine bug (function identity compares a cloned captured-env pointer — `f === f` is false) (tests/test262_subset.rs, 16 tests; docs/COMPATIBILITY.md)
 
 ## M3 — Optimization Pipeline — Specialization
 
