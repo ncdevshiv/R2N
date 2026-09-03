@@ -1469,3 +1469,75 @@ runtime parser knowledge.
 **CHOSE**
 Linker-in-compiler + namespace-in-runtime; T09/T09b split with T09 done.
 19 tests; suite 257; records (M2 9/16, 63/107).
+
+## 2026-09-03 — Entry 32: M2-T15 test262-aligned conformance harness + published score
+
+**PLAN**
+M2's exit gate: a conformance harness and a PUBLISHED compatibility score.
+Upstream test262 files cannot run on the engine — they need `var`, loops,
+`switch`, `assert()`, template literals, hex/exponent numeric literals, and
+the dialect has none of those (statements are exactly `let|const|return|
+expr`). So the harness is test262-ALIGNED: authored cases, each pinning ONE
+ECMA-262 semantic in the dialect, each carrying its ECMA-section reference.
+The score must be honest (sub-100%), machine-enforced, and readable in one
+place.
+
+**WHAT**
+- `crates/r2n-runtime/tests/test262_subset.rs`: 130 cases across 14
+  categories (values/ToBoolean/typeof, ToNumber, Number-to-string, strings,
+  the full == ladder, ===, operators, closures, objects/prototypes,
+  exceptions, promises/async, generators/iterators, classes). Every case is
+  a full program observed via EXACT console.log comparison after one flush
+  (async jobs drain to fixpoint inside flush, so await/promise cases observe
+  continuations).
+- Honest scoring: ecma_pass cases are hard regression gates; 13 known
+  gaps/divergences pin TODAY'S output (engine drift on a gap still fails
+  CI), count as not-passing, and are listed with reasons. Published score:
+  117/130 = 90% — 100% on values, ==, closures, objects, exceptions,
+  promises, generators, classes; the gaps sit in - and < coercion (no
+  ToNumber on strict-number ops), BigInt+Number TypeError, >=1e21 / <1e-6
+  exponent formatting, string-index undefined (null today), and the six
+  deliberate M2-T05 divergences.
+- docs/COMPATIBILITY.md: methodology, per-category score table, known gaps
+  with reasons, and the out-of-scope surface (missing statements, lexical
+  forms, builtins) listed as tasks rather than scored failures. README
+  links it without duplicating the number (no drift surface).
+- Enforcement: 14 category tests + `published_scorecard_matches_harness`
+  (recomputes per-category/overall fractions AND the known-gaps id set from
+  the case table and asserts the doc agrees — same philosophy as the README
+  test-count check). Env-gated dev tools: R2N_TRIAGE=1 (actual-vs-expected
+  per case) and R2N_SCORECARD=1 (paste-ready table).
+- The harness immediately earned its keep: triage exposed that `f === f`
+  is FALSE — function equality compares the captured-env pointer, but
+  reading a function value clones its captured Env, so the pointer never
+  matches (ECMA: true). Pinned as T262-SEQ-008 known gap; the fix is now a
+  scored, prioritized follow-up instead of an unknown.
+
+**WHY**
+"Compatibility claims come from the conformance suite, published as
+percentages" is a completion rule, not a slogan. Authoring cases in the
+dialect (instead of waiting for general statement syntax) measures the
+engine's REAL semantic level today; the known-gap mechanism keeps the
+published number honest in both directions — a fix forces a score update,
+and a regression forces a score DROP into the PR diff. The out-of-scope
+list prevents the score from pretending to measure builtins that don't
+exist.
+
+**OPTIONS**
+- Run upstream test262 files verbatim: rejected for M2 exit — blocked on
+  general statement syntax (T09b-adjacent language work); noted as the
+  eventual upgrade path in the scorecard.
+- All-cases-must-pass (pin only implemented behavior, score 100%):
+  rejected — a 100% score of a self-chosen subset measures nothing and
+  can't show progress.
+- Score = passing/total with gaps allowed but scorecard hand-maintained:
+  rejected — hand-maintained numbers rot; the consistency test makes the
+  doc machine-checked.
+- Put the harness in a separate crate: rejected — it tests runtime
+  behavior through compile_source exactly like the existing integration
+  tests; a new crate adds an architecture edge for no isolation benefit.
+
+**CHOSE**
+Authored ECMA-aligned cases + honest known-gap scoring + machine-checked
+scorecard. 16 tests (14 category + consistency + triage); suite 273;
+score 117/130 = 90%; records (M2 10/16, 64/107).

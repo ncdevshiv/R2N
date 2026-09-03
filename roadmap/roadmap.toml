@@ -551,7 +551,7 @@ done = false
 id = "M2-T15"
 title = "test262-subset conformance harness + published compatibility score"
 priority = "P0"
-done = false
+done = true
 
 [[phases]]
 id = "M3"
