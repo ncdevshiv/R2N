@@ -1541,3 +1541,56 @@ exist.
 Authored ECMA-aligned cases + honest known-gap scoring + machine-checked
 scorecard. 16 tests (14 category + consistency + triage); suite 273;
 score 117/130 = 90%; records (M2 10/16, 64/107).
+
+## 2026-09-03 — Entry 33: Function identity fix (harness-found bug)
+
+**PLAN**
+T262-SEQ-008 (pinned by the T15 harness): `f === f` evaluates FALSE. The
+scorecard's own output says the fix is the highest-value next change, so
+close the gap it just opened.
+
+**WHAT**
+- Root cause: `Value::Function` equality compared the CAPTURED-ENV pointer
+  (`std::ptr::eq(a, b)` on two `Env` structs). `Env` derives Clone and
+  cloning produces a NEW struct (its internal Rc frames are shared, but the
+  struct itself is copied) — and every variable read clones the value, so
+  no function value ever equaled itself.
+- Fix: `Value::Function` gains `ident: Rc<()>`, a unique token minted at
+  each of the three construction sites (closure evaluation, Promise
+  executor, per-`new` class prototype methods — each site genuinely mints
+  a distinct function instance, so per-site minting is ECMA-correct).
+  Equality (both `PartialEq for Value` and `strictly_equal`) compares
+  tokens via `Rc::ptr_eq`; the full call-path destructure updated.
+- Harness: SEQ-008 promoted to ecma_pass (`f === g` false, `f === f` true);
+  two new cases lock the boundary — SEQ-009 (each EVALUATION of a closure
+  expression mints a distinct function: `mk(1) === mk(1)` false while
+  `a === a` true) and SEQ-010 (repeated method reads share identity:
+  `o.m === o.m` true).
+- Scorecard regenerated from the binary: StrictEq 10/10, overall
+  120/132 = 91% (was 117/130 = 90%).
+
+**WHY**
+Function identity is load-bearing React semantics: useCallback identity
+stability (M1-T08's `Value::Handler` carries a registration number for
+exactly this), effect-dep arrays, memo caches. The bug sat invisible until
+a behavioral harness asked the ECMA question directly. The fix is minimal
+and honest — the token records identity the representation already implied
+but never stored — and the consistency test forces the published score to
+move with it (90% → 91%), which is the whole point of the scorecard.
+
+**OPTIONS**
+- Compare `(params, body)` structurally: rejected — two separately
+  evaluated closures with identical code are DISTINCT functions in ECMA
+  (`mk(1) === mk(1)` is false); structural equality would weld them
+  together and break the new SEQ-009.
+- Rc::ptr_eq on the captured env's TOP frame only: rejected — reads clone
+  the whole Env struct; only the token survives cloning unchanged, and a
+  top-frame pointer changes when a closure's defining scope exits.
+- Store an explicit u64 counter id: equivalent in behavior, but Rc<()>
+  needs no counter plumbing and cannot collide or wrap.
+
+**CHOSE**
+Identity token on the value, minted per construction site; token-based
+equality in both comparison paths. 0 new engine tests needed — the
+harness's three StrictEq identity cases ARE the tests; suite 273; score
+120/132 = 91%; records (M2 10/16, 64/107).
