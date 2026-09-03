@@ -167,6 +167,7 @@ pub fn eval(
                     params: params.clone(),
                     body: body.clone(),
                     captured: env.clone(),
+                    ident: std::rc::Rc::new(()),
                 };
                 let res = Value::Settler {
                     promise: handle.clone(),
@@ -220,6 +221,7 @@ pub fn eval(
                         params: m.params.clone(),
                         body: Box::new(m.body.clone()),
                         captured: Env::new(),
+                        ident: std::rc::Rc::new(()),
                     },
                 );
             }
@@ -376,6 +378,10 @@ pub fn eval(
                 params: params.clone(),
                 body: body.clone(),
                 captured: env.clone(),
+                // One token per closure VALUE: `f === f` must hold (the same
+                // binding read twice yields the same ident Rc), while two
+                // evaluations of the same closure expression are distinct.
+                ident: std::rc::Rc::new(()),
             })
         }
         JsExpr::Call { callee, args } => {
@@ -855,8 +861,8 @@ fn strictly_equal(a: &Value, b: &Value) -> bool {
         (Value::BigInt(x), Value::BigInt(y)) => x == y,
         (Value::Symbol(x), Value::Symbol(y)) => x.id == y.id,
         (Value::Object(x), Value::Object(y)) => std::rc::Rc::ptr_eq(x, y),
-        (Value::Function { captured: x, .. }, Value::Function { captured: y, .. }) => {
-            std::ptr::eq(x, y)
+        (Value::Function { ident: x, .. }, Value::Function { ident: y, .. }) => {
+            std::rc::Rc::ptr_eq(x, y)
         }
         (Value::Array(x), Value::Array(y)) => x == y,
         (Value::Map(x), Value::Map(y)) => x == y,
@@ -1118,6 +1124,7 @@ fn call_value(
             params,
             body,
             captured,
+            ..
         } => {
             // Call against the CAPTURED lexical env (params in a child
             // scope; shared-frame writes in the captured scope are seen).

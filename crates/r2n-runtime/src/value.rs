@@ -74,11 +74,16 @@ pub enum Value {
     Object(std::rc::Rc<std::cell::RefCell<ObjData>>),
     /// A first-class function value: params + body (a `JsExpr`) invoked
     /// against its CAPTURED lexical environment (the env where the
-    /// arrow was evaluated; M2-T03).
+    /// arrow was evaluated; M2-T03). `ident` is a unique-per-instance token
+    /// minted at creation: function equality is identity (ECMA), and the
+    /// captured env alone cannot serve — reading a function value clones
+    /// its `Env` (a new struct), so env-pointer comparison would make even
+    /// `f === f` false.
     Function {
         params: Vec<String>,
         body: Box<r2n_ir::js::JsExpr>,
         captured: crate::eval::Env,
+        ident: std::rc::Rc<()>,
     },
     /// An opaque external handle (host resource; renderer-bound objects).
     External(u64),
@@ -177,7 +182,7 @@ impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         use Value::*;
         match (self, other) {
-            (Function { captured: a, .. }, Function { captured: b, .. }) => std::ptr::eq(a, b),
+            (Function { ident: a, .. }, Function { ident: b, .. }) => std::rc::Rc::ptr_eq(a, b),
             (
                 Handler {
                     inst_path: ai,

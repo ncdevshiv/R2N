@@ -599,10 +599,23 @@ fn cases() -> Vec<Case> {
     v.push(tc("T262-SEQ-007", "ECMA 7.2.15 (object identity)", StrictEq, wrap(
         "    let a = Object();\n    let b = a;\n    let c = Object();\n    console.log(a === b, a === c);"),
         &["true false"]));
-    v.push(div("T262-SEQ-008", "ECMA 7.2.15 (function identity)", StrictEq, wrap(
-        "    let f = (x) => x;\n    let g = (x) => x;\n    console.log(f === g, f === f);"),
-        &["false false"],
-        "function equality compares the captured-env pointer, but reading a function value clones its captured Env — so even f === f is false; JS: true"));
+    v.push(tc(
+        "T262-SEQ-008",
+        "ECMA 7.2.15 (function identity)",
+        StrictEq,
+        wrap("    let f = (x) => x;\n    let g = (x) => x;\n    console.log(f === g, f === f);"),
+        &["false true"],
+    ));
+    v.push(tc("T262-SEQ-009", "ECMA 7.2.15 (each evaluation mints a new function)", StrictEq, wrap(
+        "    let mk = (n) => (x) => x + n;\n    let a = mk(1);\n    let b = mk(1);\n    console.log(a === b, a === a);"),
+        &["false true"]));
+    v.push(tc(
+        "T262-SEQ-010",
+        "ECMA 7.2.15 (method reads share identity)",
+        StrictEq,
+        wrap("    let o = Object();\n    o.m = (x) => x;\n    console.log(o.m === o.m);"),
+        &["true"],
+    ));
 
     // --- Operators -----------------------------------------------------------
     v.push(tc(

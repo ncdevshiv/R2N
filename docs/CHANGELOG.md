@@ -52,11 +52,19 @@ correspond to git tags that must point at a green CI commit on main.
   `published_scorecard_matches_harness` consistency test that fails CI unless
   docs/COMPATIBILITY.md agrees with the harness's computed score.
 - Published compatibility scorecard (M2-T15): `docs/COMPATIBILITY.md` records
-  **117/130 = 90%** of the test262-aligned subset, the 13 known gaps/divergences
+  the score of the test262-aligned subset, the known gaps/divergences
   with reasons (BigInt+Number TypeError, `-`/`<` ToNumber coercion, ≥1e21 and
-  <1e-6 exponent formatting, string-index `undefined`, broken function identity
-  `f === f`, and the six deliberate M2-T05 divergences), and the out-of-scope
-  surface. Suite is now 273 green, clippy clean.
+  <1e-6 exponent formatting, string-index `undefined`, and the six deliberate
+  M2-T05 divergences), and the out-of-scope surface. Suite is now 273 green,
+  clippy clean.
+- Function identity fix (harness-found): `Value::Function` gains a
+  per-instance identity token (`Rc<()>`, minted at each of the three
+  construction sites — closure eval, Promise executor, class prototype
+  methods); `===` and `==` compare tokens instead of the captured-env
+  pointer, which had made even `f === f` false (the env struct clones on
+  every variable read). `T262-SEQ-008` promoted to pass and two new
+  identity cases added (distinct evaluations are distinct functions;
+  repeated method reads share identity). Score 117/130 → **120/132 = 91%**.
 
 
 ## v0.1.0 — 2026-08-30

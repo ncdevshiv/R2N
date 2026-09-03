@@ -1,6 +1,6 @@
 # R2N — JavaScript Compatibility Scorecard
 
-> **JS compatibility: 90%** of the test262-aligned subset (117 of 130 cases).
+> **JS compatibility: 91%** of the test262-aligned subset (120 of 132 cases).
 > Generated from `crates/r2n-runtime/tests/test262_subset.rs` and re-verified
 > automatically by the `published_scorecard_matches_harness` test — if the
 > engine's behavior or the case table changes without this document being
@@ -12,7 +12,7 @@ Upstream [test262](https://github.com/tc39/test262) files cannot run on the
 R2N engine yet: they require general statement syntax (`var`, loops,
 `switch`), `assert()`, template literals, and numeric literal forms the
 component dialect does not have. The M2 conformance harness is therefore
-**test262-aligned, not test262-derived**: 130 authored cases, each pinning ONE
+**test262-aligned, not test262-derived**: 132 authored cases, each pinning ONE
 ECMA-262 semantic in the R2N dialect, each carrying a reference to the ECMA
 section it parallels. Observation is behavioral only (`console.log` output
 compared exactly) — never API-presence.
@@ -37,7 +37,7 @@ compared exactly) — never API-presence.
 | NumToString | 9 | 11 | 82% |
 | Strings | 10 | 11 | 91% |
 | AbstractEq | 12 | 12 | 100% |
-| StrictEq | 7 | 8 | 88% |
+| StrictEq | 10 | 10 | 100% |
 | Operators | 10 | 12 | 83% |
 | Closures | 6 | 6 | 100% |
 | Objects | 11 | 11 | 100% |
@@ -46,9 +46,9 @@ compared exactly) — never API-presence.
 | Generators | 6 | 6 | 100% |
 | Classes | 5 | 5 | 100% |
 | Divergences | 0 | 6 | 0% |
-| **Overall** | **117** | **130** | **90%** |
+| **Overall** | **120** | **132** | **91%** |
 
-## Known gaps (13)
+## Known gaps (12)
 
 Each entry pins the engine's current output; the fix is a future task
 prioritized by this list.
@@ -61,9 +61,6 @@ prioritized by this list.
   (`0.0000001`); JS switches to `1e-7`.
 - **T262-STR-011** — out-of-range string index yields `null`; JS yields
   `undefined`.
-- **T262-SEQ-008** — function identity is broken: `f === f` is `false`
-  because reading a function value clones its captured env, so the pointer
-  comparison never matches. JS: `true`.
 - **T262-OP-011** — `"5" - 1` errors ("non-number operand"); JS coerces via
   ToNumber and yields `4`. (`+` coerces correctly; `- * / %` do not.)
 - **T262-OP-012** — `"5" < 10` errors ("incomparable operands"); JS coerces
