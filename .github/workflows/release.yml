@@ -105,7 +105,7 @@ jobs:
         run: sha256sum * > SHA256SUMS.txt
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body_path: release-body.md
           fail_on_unmatched_files: true
